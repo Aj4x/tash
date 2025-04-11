@@ -23,10 +23,10 @@ var (
 	focusedStyle  = lipgloss.NewStyle().BorderStyle(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("69"))
 	helpStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 
+	// Message Styles
 	appMsgStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true) // Green for app messages
 	errorMsgStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)  // Red for error messages
 	outputStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("7"))             // Default color for regular output
-
 )
 
 func main() {
@@ -43,13 +43,30 @@ type Task struct {
 	Aliases []string
 }
 
+type Control int
+
+const (
+	ControlTable Control = iota
+	ControlViewport
+
+	ControlMax = Control(iota)
+)
+
+func (c Control) Tab() Control {
+	tabbedControl := Control(int(c) + 1)
+	if tabbedControl >= ControlMax {
+		return Control(0)
+	}
+	return tabbedControl
+}
+
 type Model struct {
 	Tasks       []Task
 	result      *string
 	outChan     chan string
 	viewport    viewport.Model
 	table       table.Model
-	focused     int
+	focused     Control
 	width       int
 	height      int
 	initialised bool
@@ -80,7 +97,7 @@ func NewModel() Model {
 		outChan:     make(chan string),
 		viewport:    viewport.New(0, viewportHeight),
 		table:       t,
-		focused:     0,
+		focused:     ControlTable,
 		initialised: false,
 	}
 }
@@ -117,23 +134,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+l":
 			return m, m.RefreshTaskList()
 		case "tab":
-			m.focused = (m.focused + 1) % 2
-			if m.focused == 0 {
+			m.focused = m.focused.Tab()
+			if m.focused == ControlTable {
 				m.table.Focus()
 			} else {
 				m.table.Blur()
 			}
 			return m, nil
 		case "up", "down", "j", "k":
-			if m.focused == 0 {
+			switch m.focused {
+			case ControlTable:
 				var cmd tea.Cmd
 				m.table, cmd = m.table.Update(msg)
 				cmds = append(cmds, cmd)
-			} else {
+				break
+			case ControlViewport:
 				var cmd tea.Cmd
 				m.viewport, cmd = m.viewport.Update(msg)
 				cmds = append(cmds, cmd)
+			default:
+				return m, nil
 			}
+			return m, tea.Batch(cmds...)
 		}
 	case TaskMsg:
 		m.appendCommandOutput(string(msg))
