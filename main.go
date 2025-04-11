@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/table"
@@ -138,6 +139,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.appendCommandOutput(string(msg))
 		cmds = append(cmds, m.waitForTaskMsg())
 		m.appendTask(string(msg))
+		slices.SortFunc(m.Tasks, func(a, b Task) int {
+			return strings.Compare(a.Id, b.Id)
+		})
 	case ListAllErrMsg:
 		m.appendErrorMsg("Error: " + msg.err.Error())
 	case ListAllDoneMsg:
@@ -215,12 +219,6 @@ func (m Model) waitForTaskMsg() tea.Cmd {
 		return TaskMsg(<-m.outChan)
 	}
 }
-
-//func (m *Model) appendOutput(s string) {
-//	*m.result += "\n" + s
-//	m.viewport.SetContent(*m.result)
-//	m.viewport.GotoBottom()
-//}
 
 func (m *Model) appendTask(taskMsg string) {
 	line, ok := strings.CutPrefix(taskMsg, "* ")
