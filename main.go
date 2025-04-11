@@ -15,8 +15,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-const viewportHeight = 12
-
 var (
 	tableStyle    = lipgloss.NewStyle().BorderStyle(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240"))
 	viewportStyle = lipgloss.NewStyle().BorderStyle(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240"))
@@ -49,7 +47,9 @@ const (
 	ControlTable Control = iota
 	ControlViewport
 
-	ControlMax = Control(iota)
+	// put any new controls above this line, so our ControlMax, used for tabbing
+	// though the controls, stays the maximum Control value
+	ControlMax
 )
 
 func (c Control) Tab() Control {
@@ -64,7 +64,9 @@ type Model struct {
 	Tasks              []Task
 	tasksLoading       bool
 	result             *string
+	taskChan           chan string
 	outChan            chan string
+	errChan            chan string
 	viewport           viewport.Model
 	table              table.Model
 	focused            Control
@@ -97,8 +99,10 @@ func NewModel() Model {
 	return Model{
 		Tasks:              []Task{},
 		result:             new(string),
+		taskChan:           make(chan string),
 		outChan:            make(chan string),
-		viewport:           viewport.New(0, viewportHeight),
+		errChan:            make(chan string),
+		viewport:           viewport.New(0, 0),
 		table:              t,
 		focused:            ControlTable,
 		initialised:        false,
@@ -109,7 +113,6 @@ func NewModel() Model {
 
 func (m Model) Init() tea.Cmd {
 	return m.RefreshTaskList()
-
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -178,6 +181,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			return m, tea.Batch(cmds...)
+		case "enter", "e":
+			if m.focused == ControlTable && len(m.Tasks) > 0 && m.table.SelectedRow() != nil {
+				selectedIndex := m.table.Cursor()
+				selectedTask := m.Tasks[selectedIndex]
+				m.appendAppMsg(fmt.Sprintf("Executing task: %s\n\n", selectedTask.Id))
+				return m, tea.Batch(m.ExecuteTask(selectedTask.Id, m.outChan), m.waitForTaskOutputMsg())
+			}
+			return m, nil
 		}
 	case TaskMsg:
 		m.appendCommandOutput(string(msg))
@@ -186,9 +197,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		slices.SortFunc(m.Tasks, func(a, b Task) int {
 			return strings.Compare(a.Id, b.Id)
 		})
+	case TaskOutputMsg:
+		m.appendCommandOutput(string(msg))
+		cmds = append(cmds, m.waitForTaskOutputMsg())
+	case TaskErrMsg:
+		m.appendErrorMsg(msg.err.Error())
+		cmds = append(cmds, m.waitForTaskMsg())
 	case ListAllErrMsg:
 		m.tasksLoading = false
 		m.appendErrorMsg("Error: " + msg.err.Error())
+	case TaskDoneMsg:
+		m.tasksLoading = false
+		m.appendAppMsg("Task executed successfully!\n")
 	case ListAllDoneMsg:
 		m.tasksLoading = false
 		m.appendAppMsg("Task list refreshed successfully!\n")
@@ -220,7 +240,7 @@ func (m Model) View() string {
 	mainView := lipgloss.JoinHorizontal(lipgloss.Top, tableRendered, viewportRendered)
 
 	// Add help text at the bottom
-	helpText := helpStyle.Render("↑/↓: Navigate • Tab: Switch Focus • Enter: Execute Task • i: Show Details • Ctrl+L: Refresh • q: Quit")
+	helpText := helpStyle.Render("↑/↓: Navigate • Tab: Switch Focus • Enter/e: Execute Task • i: Show Details • Ctrl+L: Refresh • q: Quit")
 
 	fullView := lipgloss.JoinVertical(lipgloss.Left, mainView, helpText)
 
@@ -236,7 +256,7 @@ func (m *Model) RefreshTaskList() tea.Cmd {
 	m.Tasks = []Task{}
 	m.tasksLoading = true
 	m.appendAppMsg("\nRefreshing task list\n")
-	return tea.Batch(ListAll(m.outChan), m.waitForTaskMsg())
+	return tea.Batch(ListAll(m.taskChan), m.waitForTaskMsg())
 }
 
 type ListAllErrMsg struct{ err error }
@@ -245,14 +265,19 @@ type ListAllDoneMsg struct{}
 func ListAll(target chan string) tea.Cmd {
 	return func() tea.Msg {
 		cmd := exec.Command("task", "--list-all")
-		out, err := cmd.StdoutPipe()
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			return ListAllErrMsg{err: err}
+		}
+		stderr, err := cmd.StderrPipe()
 		if err != nil {
 			return ListAllErrMsg{err: err}
 		}
 		if err := cmd.Start(); err != nil {
 			return ListAllErrMsg{err: err}
 		}
-		buf := bufio.NewReader(out)
+		reader := io.MultiReader(stdout, stderr)
+		buf := bufio.NewReader(reader)
 		for {
 			line, _, err := buf.ReadLine()
 			if err == io.EOF {
@@ -267,10 +292,19 @@ func ListAll(target chan string) tea.Cmd {
 }
 
 type TaskMsg string
+type TaskErrMsg struct{ err error }
+type TaskOutputMsg string
+type TaskDoneMsg struct{}
 
 func (m Model) waitForTaskMsg() tea.Cmd {
 	return func() tea.Msg {
-		return TaskMsg(<-m.outChan)
+		return TaskMsg(<-m.taskChan)
+	}
+}
+
+func (m Model) waitForTaskOutputMsg() tea.Cmd {
+	return func() tea.Msg {
+		return TaskOutputMsg(<-m.outChan)
 	}
 }
 
@@ -366,11 +400,6 @@ func (m Model) renderTaskDetailOverlay() string {
 	// Wrap the content in the overlay style
 	overlay := overlayStyle.Render(content)
 
-	// Center the overlay in the terminal
-	//overlayWidth, overlayHeight := lipgloss.Size(overlay)
-	//xPos := (m.width - overlayWidth) / 2
-	//yPos := (m.height - overlayHeight) / 2
-
 	return lipgloss.Place(
 		m.width,
 		m.height,
@@ -378,4 +407,35 @@ func (m Model) renderTaskDetailOverlay() string {
 		lipgloss.Center,
 		overlay,
 	)
+}
+
+// ExecuteTask runs a task and returns a command that will handle the output
+func (m Model) ExecuteTask(taskId string, target chan string) tea.Cmd {
+	return func() tea.Msg {
+		cmd := exec.Command("task", taskId)
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			return TaskErrMsg{err: err}
+		}
+		stderr, err := cmd.StderrPipe()
+		if err != nil {
+			return TaskErrMsg{err: err}
+		}
+		if err := cmd.Start(); err != nil {
+			return TaskErrMsg{err: err}
+		}
+		reader := io.MultiReader(stdout, stderr)
+		buf := bufio.NewReader(reader)
+
+		for {
+			line, _, err := buf.ReadLine()
+			if err == io.EOF {
+				return TaskDoneMsg{}
+			}
+			if err != nil {
+				return TaskErrMsg{err: err}
+			}
+			target <- string(line)
+		}
+	}
 }
