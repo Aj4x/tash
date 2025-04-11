@@ -15,9 +15,115 @@ tasks:
     summary: List all files in current directory
     platforms:
       - linux
-      
+  
   dir:
     cmd: dir
     summary: List all files in current directory
     platforms:
       - windows
+
+  system-info:
+    cmd: |
+      echo "===== System Information ====="
+      uname -a || ver
+      echo "===== CPU Info ====="
+      cat /proc/cpuinfo | grep "model name" | head -1 || echo "CPU info not available"
+      echo "===== Memory Info ====="
+      free -h || echo "Memory info not available"
+    summary: Display system information
+    desc: Displays detailed information about the current system including OS, CPU, and memory
+    aliases:
+      - sysinfo
+      - si
+
+  disk-space:
+    cmd: df -h || echo "Disk space command not available"
+    summary: Show disk space usage
+    desc: Displays information about disk space usage on all mounted filesystems
+    aliases:
+      - df
+      - disk
+
+  date-time:
+    cmd: |
+      echo "Current date and time:" 
+      date
+      echo "Calendar for current month:"
+      cal || echo "Calendar not available"
+    summary: Display current date and time
+    desc: Shows the current date and time along with a calendar for the current month
+    aliases:
+      - date
+      - time
+      - dt
+
+  network-info:
+    cmd: |
+      echo "===== Network Interfaces ====="
+      ifconfig || ipconfig || echo "Network interface info not available"
+      echo "===== Network Connections ====="
+      netstat -an | head -20 || echo "Network connection info not available"
+    summary: Show network information
+    desc: Displays information about network interfaces and current network connections
+    aliases:
+      - netinfo
+      - net
+  
+  random-quotes:
+    cmd: |
+      echo "Here are some random programming quotes:"
+      echo "\"Talk is cheap. Show me the code.\" - Linus Torvalds"
+      echo "\"Programs must be written for people to read, and only incidentally for machines to execute.\" - Harold Abelson"
+      echo "\"Always code as if the guy who ends up maintaining your code will be a violent psychopath who knows where you live.\" - John Woods"
+      echo "\"Any fool can write code that a computer can understand. Good programmers write code that humans can understand.\" - Martin Fowler"
+    summary: Display programming quotes
+    desc: Shows a collection of famous programming and computer science quotes from well-known figures in the field
+    aliases:
+      - quotes
+      - q
+
+  process-list:
+    cmd: ps aux | head -10 || tasklist | head -10 || echo "Process listing not available"
+    summary: Show running processes
+    desc: Displays a list of the top running processes on the system with details about CPU and memory usage
+    aliases:
+      - ps
+      - proc
+
+  weather:
+    cmd: |
+      echo "Weather Forecast Simulation"
+      echo "============================"
+      echo "Current conditions: Partly cloudy, 22°C"
+      echo "Tomorrow: Sunny, High 25°C, Low 18°C"
+      echo "Day after: Chance of rain, High 20°C, Low 15°C"
+    summary: Show weather information
+    desc: Displays a simulated weather forecast for demonstration purposes
+    aliases:
+      - wthr
+      - w
+
+  generate-lorem:
+    cmd: |
+      echo "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum."
+    summary: Generate Lorem Ipsum text
+    desc: Outputs a paragraph of Lorem Ipsum placeholder text that can be used for testing text display capabilities
+    aliases:
+      - lorem
+      - ipsum
+
+  cowsay:
+    cmd: |
+      echo "  _________________"
+      echo "< Hello from Tash! >"
+      echo "  -----------------"
+      echo "         \   ^__^"
+      echo "          \  (oo)\_______"
+      echo "             (__)\       )\/\\"
+      echo "                 ||----w |"
+      echo "                 ||     ||"
+    summary: ASCII cow art
+    desc: Displays a cute ASCII art cow with a greeting message, mimicking the 'cowsay' program
+    aliases:
+      - cow
+      - moo
