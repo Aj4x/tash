@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"github.com/mattn/go-runewidth"
 	"io"
 	"os"
 	"os/exec"
@@ -133,6 +134,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		m.viewport.Width = viewportWidth
 		m.viewport.Height = m.height - 4
+		m.viewport.HighPerformanceRendering = false
 
 		return m, nil
 	case tea.KeyMsg:
@@ -147,6 +149,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c", "esc":
 			return m, tea.Quit
 		case "ctrl+l":
+			if m.tasksLoading {
+				return m, nil
+			}
+			m.result = new(string)
+			m.viewport.SetContent(*m.result)
+			m.viewport.GotoTop()
+			return m, nil
+		case "ctrl+r":
 			if m.tasksLoading {
 				return m, nil
 			}
@@ -182,10 +192,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Batch(cmds...)
 		case "enter", "e":
+			if m.tasksLoading {
+				return m, nil
+			}
 			if m.focused == ControlTable && len(m.Tasks) > 0 && m.table.SelectedRow() != nil {
 				selectedIndex := m.table.Cursor()
 				selectedTask := m.Tasks[selectedIndex]
 				m.appendAppMsg(fmt.Sprintf("Executing task: %s\n\n", selectedTask.Id))
+				m.tasksLoading = true
 				return m, tea.Batch(m.ExecuteTask(selectedTask.Id, m.outChan), m.waitForTaskOutputMsg())
 			}
 			return m, nil
@@ -240,7 +254,7 @@ func (m Model) View() string {
 	mainView := lipgloss.JoinHorizontal(lipgloss.Top, tableRendered, viewportRendered)
 
 	// Add help text at the bottom
-	helpText := helpStyle.Render("↑/↓: Navigate • Tab: Switch Focus • Enter/e: Execute Task • i: Show Details • Ctrl+L: Refresh • q: Quit")
+	helpText := helpStyle.Render("↑/↓: Navigate • Tab: Switch Focus • Enter/e: Execute Task • i: Show Details • Ctrl+R: Refresh • Ctrl+L: Clear Output • q: Quit")
 
 	fullView := lipgloss.JoinVertical(lipgloss.Left, mainView, helpText)
 
@@ -344,8 +358,26 @@ func (m *Model) updateTaskTable() {
 	m.table.SetRows(rows)
 }
 
+func TextWrap(s string, n int) []string {
+	if n <= 0 {
+		return nil
+	}
+	var lines []string
+	remaining := s
+	for runewidth.StringWidth(remaining) >= n {
+		lines = append(lines, remaining[:n])
+		remaining = remaining[n:]
+	}
+	lines = append(lines, remaining)
+	return lines
+}
+
 func (m *Model) appendToViewport(msg string) {
-	*m.result += "\n" + msg
+	lines := TextWrap(msg, m.viewport.Width-2)
+	for _, line := range lines {
+		*m.result += "\n" + line
+	}
+	//*m.result += "\n" + msg
 	m.viewport.SetContent(*m.result)
 	m.viewport.GotoBottom()
 }
