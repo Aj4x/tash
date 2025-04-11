@@ -61,15 +61,18 @@ func (c Control) Tab() Control {
 }
 
 type Model struct {
-	Tasks       []Task
-	result      *string
-	outChan     chan string
-	viewport    viewport.Model
-	table       table.Model
-	focused     Control
-	width       int
-	height      int
-	initialised bool
+	Tasks              []Task
+	tasksLoading       bool
+	result             *string
+	outChan            chan string
+	viewport           viewport.Model
+	table              table.Model
+	focused            Control
+	width              int
+	height             int
+	initialised        bool
+	selectedTask       *Task
+	showDetailsOverlay bool
 }
 
 func NewModel() Model {
@@ -92,13 +95,15 @@ func NewModel() Model {
 	})
 
 	return Model{
-		Tasks:       []Task{},
-		result:      new(string),
-		outChan:     make(chan string),
-		viewport:    viewport.New(0, viewportHeight),
-		table:       t,
-		focused:     ControlTable,
-		initialised: false,
+		Tasks:              []Task{},
+		result:             new(string),
+		outChan:            make(chan string),
+		viewport:           viewport.New(0, viewportHeight),
+		table:              t,
+		focused:            ControlTable,
+		initialised:        false,
+		selectedTask:       nil,
+		showDetailsOverlay: false,
 	}
 }
 
@@ -128,11 +133,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		return m, nil
 	case tea.KeyMsg:
+		if m.showDetailsOverlay {
+			if msg.String() == "esc" || msg.String() == "i" {
+				m.showDetailsOverlay = false
+				return m, nil
+			}
+			return m, nil
+		}
 		switch msg.String() {
 		case "q", "ctrl+c", "esc":
 			return m, tea.Quit
 		case "ctrl+l":
+			if m.tasksLoading {
+				return m, nil
+			}
 			return m, m.RefreshTaskList()
+		case "i":
+			if m.focused == ControlTable && len(m.Tasks) > 0 && m.table.SelectedRow() != nil {
+				selectedIndex := m.table.Cursor()
+				m.selectedTask = &m.Tasks[selectedIndex]
+				m.showDetailsOverlay = true
+			}
+			return m, nil
 		case "tab":
 			m.focused = m.focused.Tab()
 			if m.focused == ControlTable {
@@ -165,8 +187,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return strings.Compare(a.Id, b.Id)
 		})
 	case ListAllErrMsg:
+		m.tasksLoading = false
 		m.appendErrorMsg("Error: " + msg.err.Error())
 	case ListAllDoneMsg:
+		m.tasksLoading = false
 		m.appendAppMsg("Task list refreshed successfully!\n")
 		m.updateTaskTable()
 	}
@@ -184,25 +208,33 @@ func (m Model) View() string {
 	tableRendered := m.table.View()
 	viewportRendered := m.viewport.View()
 
-	if m.focused == 0 {
+	if m.focused == ControlTable {
 		tableRendered = focusedStyle.Render(tableRendered)
 		viewportRendered = viewportStyle.Render(viewportRendered)
-	} else {
+	} else if m.focused == ControlViewport {
 		tableRendered = tableStyle.Render(tableRendered)
 		viewportRendered = focusedStyle.Render(viewportRendered)
 	}
 
-	helpText := helpStyle.Render("↑/↓: Navigate • Tab: Switch focus • Ctrl+L: Refresh • q: Quit")
+	// Build the layout
+	mainView := lipgloss.JoinHorizontal(lipgloss.Top, tableRendered, viewportRendered)
 
-	return lipgloss.JoinHorizontal(
-		lipgloss.Top,
-		tableRendered,
-		viewportRendered,
-	) + "\n" + helpText
+	// Add help text at the bottom
+	helpText := helpStyle.Render("↑/↓: Navigate • Tab: Switch Focus • Enter: Execute Task • i: Show Details • Ctrl+L: Refresh • q: Quit")
+
+	fullView := lipgloss.JoinVertical(lipgloss.Left, mainView, helpText)
+
+	// If overlay is visible, render it on top
+	if m.showDetailsOverlay {
+		return m.renderTaskDetailOverlay()
+	}
+
+	return fullView
 }
 
 func (m *Model) RefreshTaskList() tea.Cmd {
 	m.Tasks = []Task{}
+	m.tasksLoading = true
 	m.appendAppMsg("\nRefreshing task list\n")
 	return tea.Batch(ListAll(m.outChan), m.waitForTaskMsg())
 }
@@ -294,4 +326,56 @@ func (m *Model) appendErrorMsg(msg string) {
 
 func (m *Model) appendCommandOutput(msg string) {
 	m.appendToViewport(outputStyle.Render(msg))
+}
+
+func (m Model) renderTaskDetailOverlay() string {
+	if !m.showDetailsOverlay || m.selectedTask == nil {
+		return ""
+	}
+
+	// Calculate overlay dimensions
+	width := int(float64(m.width) * 0.7)
+	height := int(float64(m.height) * 0.7)
+
+	// Create styles for overlay components
+	overlayStyle := lipgloss.NewStyle().
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("63")).
+		Padding(1, 2).
+		Width(width).
+		Height(height)
+
+	titleStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("63")).
+		MarginBottom(1)
+
+	labelStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("241"))
+
+	// Format aliases as a comma-separated list
+	aliases := strings.Join(m.selectedTask.Aliases, ", ")
+
+	// Build the content
+	content := titleStyle.Render("Task Details") + "\n\n"
+	content += labelStyle.Render("ID: ") + m.selectedTask.Id + "\n\n"
+	content += labelStyle.Render("Description: ") + m.selectedTask.Desc + "\n\n"
+	content += labelStyle.Render("Aliases: ") + aliases + "\n"
+
+	// Wrap the content in the overlay style
+	overlay := overlayStyle.Render(content)
+
+	// Center the overlay in the terminal
+	//overlayWidth, overlayHeight := lipgloss.Size(overlay)
+	//xPos := (m.width - overlayWidth) / 2
+	//yPos := (m.height - overlayHeight) / 2
+
+	return lipgloss.Place(
+		m.width,
+		m.height,
+		lipgloss.Center,
+		lipgloss.Center,
+		overlay,
+	)
 }
