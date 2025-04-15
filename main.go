@@ -399,7 +399,7 @@ func (m *Model) appendTask(taskMsg string) {
 		return
 	}
 	t := Task{}
-	id, line, ok := strings.Cut(line, ":")
+	id, line, ok := strings.Cut(line, ": ")
 	if ok {
 		t.Id = id
 	}

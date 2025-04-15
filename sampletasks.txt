@@ -1,0 +1,13 @@
+task: Available tasks for this project:
+* cowsay:                 Displays a cute ASCII art cow with a greeting message, mimicking the 'cowsay' program                           (aliases: cow, moo)
+* date-time:              Shows the current date and time along with a calendar for the current month                                     (aliases: date, time, dt)
+* default:                List all                                                                                                        (aliases: list, ls)
+* generate-lorem:         Outputs a paragraph of Lorem Ipsum placeholder text that can be used for testing text display capabilities      (aliases: lorem, ipsum)
+* random-quotes:          Shows a collection of famous programming and computer science quotes from well-known figures in the field       (aliases: quotes, q)
+* weather:                Displays a simulated weather forecast for demonstration purposes                                                (aliases: wthr, w)
+* cmd:dir:                
+* cmd:ls:                 
+* sys:disk-space:         Displays information about disk space usage on all mounted filesystems                                  (aliases: df, disk)
+* sys:network-info:       Displays information about network interfaces and current network connections                           (aliases: netinfo, net)
+* sys:process-list:       Displays a list of the top running processes on the system with details about CPU and memory usage      (aliases: ps, proc)
+* sys:system-info:        Displays detailed information about the current system including OS, CPU, and memory                    (aliases: sysinfo, si)
