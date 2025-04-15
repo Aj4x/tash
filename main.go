@@ -2,18 +2,19 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
+	"github.com/charmbracelet/bubbles/table"
+	"github.com/charmbracelet/bubbles/viewport"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
 	"io"
 	"os"
 	"os/exec"
 	"slices"
 	"strings"
-
-	"github.com/charmbracelet/bubbles/table"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"syscall"
 )
 
 var (
@@ -68,6 +69,7 @@ type Model struct {
 	taskChan           chan string
 	outChan            chan string
 	errChan            chan string
+	cmdChan            chan TaskCommandMsg
 	viewport           viewport.Model
 	table              table.Model
 	focused            Control
@@ -76,6 +78,8 @@ type Model struct {
 	initialised        bool
 	selectedTask       *Task
 	showDetailsOverlay bool
+	command            *exec.Cmd
+	taskRunning        bool
 }
 
 func NewModel() Model {
@@ -103,6 +107,7 @@ func NewModel() Model {
 		taskChan:           make(chan string),
 		outChan:            make(chan string),
 		errChan:            make(chan string),
+		cmdChan:            make(chan TaskCommandMsg),
 		viewport:           viewport.New(0, 0),
 		table:              t,
 		focused:            ControlTable,
@@ -200,9 +205,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				selectedTask := m.Tasks[selectedIndex]
 				m.appendAppMsg(fmt.Sprintf("Executing task: %s\n\n", selectedTask.Id))
 				m.tasksLoading = true
-				return m, tea.Batch(m.ExecuteTask(selectedTask.Id, m.outChan), m.waitForTaskOutputMsg())
+				return m, tea.Batch(
+					m.ExecuteTask(selectedTask.Id, m.outChan, m.cmdChan, m.errChan),
+					m.waitForTaskCommandMsg(),
+					m.waitForTaskOutputMsg(),
+					m.waitForTaskErrorMsg(),
+				)
 			}
 			return m, nil
+		case "ctrl+x":
+			if m.taskRunning {
+				err := syscall.Kill(-m.command.Process.Pid, syscall.SIGINT)
+				if err != nil {
+					m.appendErrorMsg("Error cancelling task: " + err.Error())
+					return m, nil
+				}
+				m.taskRunning = false
+				m.command = nil
+				m.appendAppMsg("Task cancelled\n")
+			}
+		}
+	case TaskCommandMsg:
+		m.taskRunning = msg.taskRunning
+		m.command = msg.command
+		cmds = append(cmds, m.waitForTaskCommandMsg())
+		if msg.taskRunning {
+			m.appendAppMsg("TaskCommandMsg: running\n")
+		}
+		if msg.taskRunning {
+			m.appendAppMsg("TaskCommandMsg: stopped\n")
 		}
 	case TaskMsg:
 		m.appendCommandOutput(string(msg))
@@ -214,6 +245,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case TaskOutputMsg:
 		m.appendCommandOutput(string(msg))
 		cmds = append(cmds, m.waitForTaskOutputMsg())
+	case TaskOutputErrMsg:
+		m.appendErrorMsg(string(msg))
+		cmds = append(cmds, m.waitForTaskErrorMsg())
 	case TaskErrMsg:
 		m.appendErrorMsg(msg.err.Error())
 		cmds = append(cmds, m.waitForTaskMsg())
@@ -254,7 +288,7 @@ func (m Model) View() string {
 	mainView := lipgloss.JoinHorizontal(lipgloss.Top, tableRendered, viewportRendered)
 
 	// Add help text at the bottom
-	helpText := helpStyle.Render("↑/↓: Navigate • Tab: Switch Focus • Enter/e: Execute Task • i: Show Details • Ctrl+R: Refresh • Ctrl+L: Clear Output • q: Quit")
+	helpText := helpStyle.Render(m.helpView())
 
 	fullView := lipgloss.JoinVertical(lipgloss.Left, mainView, helpText)
 
@@ -264,6 +298,25 @@ func (m Model) View() string {
 	}
 
 	return fullView
+}
+
+func (m Model) helpView() string {
+	help := []string{
+		"q/esc: quit",
+		"tab: switch focus",
+		"↑/↓/j/k: navigate",
+		"enter/e: execute task",
+		"i: task details",
+		"ctrl+r: refresh tasks",
+		"ctrl+l: clear output",
+	}
+
+	// Add the Ctrl+x help text only when a task is running
+	if m.taskRunning {
+		help = append(help, "ctrl+x: cancel task")
+	}
+
+	return helpStyle.Render(strings.Join(help, " • "))
 }
 
 func (m *Model) RefreshTaskList() tea.Cmd {
@@ -308,7 +361,12 @@ func ListAll(target chan string) tea.Cmd {
 type TaskMsg string
 type TaskErrMsg struct{ err error }
 type TaskOutputMsg string
+type TaskOutputErrMsg string
 type TaskDoneMsg struct{}
+type TaskCommandMsg struct {
+	command     *exec.Cmd
+	taskRunning bool
+}
 
 func (m Model) waitForTaskMsg() tea.Cmd {
 	return func() tea.Msg {
@@ -319,6 +377,19 @@ func (m Model) waitForTaskMsg() tea.Cmd {
 func (m Model) waitForTaskOutputMsg() tea.Cmd {
 	return func() tea.Msg {
 		return TaskOutputMsg(<-m.outChan)
+	}
+}
+
+func (m Model) waitForTaskErrorMsg() tea.Cmd {
+	return func() tea.Msg {
+		return TaskOutputErrMsg(<-m.errChan)
+	}
+}
+
+func (m Model) waitForTaskCommandMsg() tea.Cmd {
+	return func() tea.Msg {
+		msg := <-m.cmdChan
+		return msg
 	}
 }
 
@@ -442,32 +513,77 @@ func (m Model) renderTaskDetailOverlay() string {
 }
 
 // ExecuteTask runs a task and returns a command that will handle the output
-func (m Model) ExecuteTask(taskId string, target chan string) tea.Cmd {
+func (m *Model) ExecuteTask(taskId string, target chan string, cmdChan chan TaskCommandMsg, errs chan string) tea.Cmd {
 	return func() tea.Msg {
-		cmd := exec.Command("task", taskId)
-		stdout, err := cmd.StdoutPipe()
+		m.taskRunning = true
+		m.command = exec.Command("task", taskId)
+		m.command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		cmdChan <- TaskCommandMsg{command: m.command, taskRunning: true}
+		stdout, err := m.command.StdoutPipe()
 		if err != nil {
+			m.taskRunning = false
+			m.command = nil
+			cmdChan <- TaskCommandMsg{command: nil, taskRunning: false}
 			return TaskErrMsg{err: err}
 		}
-		stderr, err := cmd.StderrPipe()
+		stderr, err := m.command.StderrPipe()
 		if err != nil {
+			m.taskRunning = false
+			m.command = nil
+			cmdChan <- TaskCommandMsg{command: nil, taskRunning: false}
 			return TaskErrMsg{err: err}
 		}
-		if err := cmd.Start(); err != nil {
+		if err := m.command.Start(); err != nil {
+			m.taskRunning = false
+			m.command = nil
+			cmdChan <- TaskCommandMsg{command: nil, taskRunning: false}
 			return TaskErrMsg{err: err}
 		}
-		reader := io.MultiReader(stdout, stderr)
-		buf := bufio.NewReader(reader)
 
-		for {
-			line, _, err := buf.ReadLine()
-			if err == io.EOF {
-				return TaskDoneMsg{}
+		go func() {
+			scanner := bufio.NewScanner(stdout)
+			for scanner.Scan() {
+				line := scanner.Text()
+				target <- line
 			}
-			if err != nil {
-				return TaskErrMsg{err: err}
+		}()
+
+		go func() {
+			scanner := bufio.NewScanner(stderr)
+			for scanner.Scan() {
+				line := scanner.Text()
+				errs <- line
 			}
-			target <- string(line)
+		}()
+
+		err = m.command.Wait()
+
+		m.taskRunning = false
+		m.command = nil
+		cmdChan <- TaskCommandMsg{command: nil, taskRunning: false}
+
+		if err != nil {
+			var exitError *exec.ExitError
+			if errors.As(err, &exitError) {
+				return TaskErrMsg{err: fmt.Errorf("task failed with exit code %d: %w", exitError.ExitCode(), err)}
+			}
+			return TaskErrMsg{err: fmt.Errorf("task failed: %w", err)}
 		}
+
+		return TaskDoneMsg{}
+
+		//reader := io.MultiReader(stdout, stderr)
+		//buf := bufio.NewReader(reader)
+		//
+		//for {
+		//	line, _, err := buf.ReadLine()
+		//	if err == io.EOF {
+		//		return TaskDoneMsg{}
+		//	}
+		//	if err != nil {
+		//		return TaskErrMsg{err: err}
+		//	}
+		//	target <- string(line)
+		//}
 	}
 }
