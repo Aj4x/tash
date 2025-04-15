@@ -56,6 +56,7 @@ tash
     - `i` - Show detailed information about selected task
     - `Ctrl+l` - Clear the output viewport
     - `Ctrl+r` - Refresh task list from Taskfile
+    - `Ctrl+x` - Cancel running task
 
 - **Application:**
     - `q`, `Esc`, or `Ctrl+c` - Quit application
