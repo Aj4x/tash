@@ -84,9 +84,8 @@ type Model struct {
 
 func NewModel() Model {
 	columns := []table.Column{
-		{Title: "Id", Width: 15},
-		{Title: "Description", Width: 30},
-		{Title: "Aliases", Width: 15},
+		{Title: "Id", Width: 30},
+		{Title: "Description", Width: 40},
 	}
 
 	t := table.New(
@@ -419,11 +418,9 @@ func (m *Model) appendTask(taskMsg string) {
 func (m *Model) updateTaskTable() {
 	var rows []table.Row
 	for _, task := range m.Tasks {
-		aliases := strings.Join(task.Aliases, ", ")
 		rows = append(rows, table.Row{
 			task.Id,
 			task.Desc,
-			aliases,
 		})
 	}
 	m.table.SetRows(rows)
