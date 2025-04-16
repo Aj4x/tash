@@ -2,7 +2,7 @@
 
 Tash is a TUI (Text User Interface) application for viewing and executing tasks from Taskfiles. It provides an interactive terminal interface to work with tasks defined in [Taskfile.dev](https://taskfile.dev) format.
 
-![Tash Screenshot](assets/screenshot.png)
+![Tash Screenshot](docs/assets/screenshot.png)
 
 ## Features
 
@@ -17,7 +17,7 @@ Tash is a TUI (Text User Interface) application for viewing and executing tasks 
 
 ### Prerequisites
 
-- Go 1.19 or later
+- Go 1.23 or later
 - A working installation of [Task](https://taskfile.dev)
 
 ### From Source
@@ -27,7 +27,9 @@ Clone the repository and build:
 ```bash
 git clone https://github.com/Aj4x/tash
 cd tash
-go build
+task build
+# or
+go build -o tash ./cmd/tash
 ```
 
 ### Using Go Install
@@ -102,13 +104,20 @@ Tash is built with these primary libraries:
    ```
 3. Build the application:
    ```bash
-   go build
+   task build
+   # or
+   go build -o tash ./cmd/tash
    ```
 
 ### Project Structure
 
-- `main.go` - Main application code
+- `cmd/tash/main.go` - Main application entry point
+- `internal/task/` - Task management functionality
+- `internal/ui/` - User interface components
+- `docs/assets/` - Documentation assets
+- `examples/` - Example files
 - `README.md` - Documentation
+- `Taskfile.yml` - Project tasks for development
 - `go.mod`, `go.sum` - Go module files
 
 ## Contributing
