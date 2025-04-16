@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/Aj4x/tash/internal/task"
 )
@@ -63,15 +64,26 @@ func TextWrap(s string, n int) []string {
 }
 
 // RenderHelpView renders the help text at the bottom of the screen
-func RenderHelpView(taskRunning bool) string {
+func RenderHelpView(taskRunning bool, showTaskPicker bool, hasSelectedTasks bool) string {
+	// If task picker is shown, show picker-specific help
+	if showTaskPicker {
+		help := []string{
+			"esc: close picker",
+			"↑/↓: navigate matches",
+			"tab: autocomplete",
+			"enter: select task",
+		}
+		return HelpStyle.Render(strings.Join(help, " • "))
+	}
+
+	// For normal view, show a more concise help text with the most important commands
 	help := []string{
 		"q/esc: quit",
 		"tab: switch focus",
 		"↑/↓/j/k: navigate",
 		"enter/e: execute task",
-		"i: task details",
-		"ctrl+r: refresh tasks",
-		"ctrl+l: clear output",
+		"/: task picker",
+		"?: help",
 	}
 
 	// Add the Ctrl+x help text only when a task is running
@@ -79,7 +91,80 @@ func RenderHelpView(taskRunning bool) string {
 		help = append(help, "ctrl+x: cancel task")
 	}
 
+	// Add task selection related help text when there are selected tasks
+	if hasSelectedTasks {
+		help = append(help, "ctrl+e: execute selected tasks")
+	}
+
 	return HelpStyle.Render(strings.Join(help, " • "))
+}
+
+// RenderTaskPicker renders the task picker overlay
+func RenderTaskPicker(width, height int, input string, matches []task.Task, selectedIndex int) string {
+	// Calculate overlay dimensions
+	overlayWidth := int(float64(width) * 0.7)
+
+	// Create styles for overlay components
+	overlayStyle := lipgloss.NewStyle().
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("63")).
+		Padding(1, 2).
+		Width(overlayWidth)
+
+	titleStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("63")).
+		MarginBottom(1)
+
+	inputStyle := lipgloss.NewStyle().
+		BorderStyle(lipgloss.NormalBorder()).
+		BorderForeground(lipgloss.Color("241")).
+		Padding(0, 1).
+		Width(overlayWidth - 6)
+
+	matchStyle := lipgloss.NewStyle().
+		Padding(0, 1).
+		Width(overlayWidth - 6)
+
+	selectedMatchStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("229")).
+		Background(lipgloss.Color("63")).
+		Bold(true).
+		Padding(0, 1).
+		Width(overlayWidth - 6)
+
+	// Build the content
+	content := titleStyle.Render("Task Picker") + "\n\n"
+	content += "Search: " + inputStyle.Render(input) + "\n\n"
+
+	if len(matches) > 0 {
+		content += "Matching Tasks:\n"
+		for i, match := range matches {
+			taskText := match.Id
+			if len(match.Aliases) > 0 {
+				taskText += " (aliases: " + strings.Join(match.Aliases, ", ") + ")"
+			}
+
+			if i == selectedIndex {
+				content += selectedMatchStyle.Render(taskText) + "\n"
+			} else {
+				content += matchStyle.Render(taskText) + "\n"
+			}
+		}
+	} else if input != "" {
+		content += "No matches found"
+	}
+
+	// Wrap the content in the overlay style
+	overlay := overlayStyle.Render(content)
+
+	return lipgloss.Place(
+		width,
+		height,
+		lipgloss.Center,
+		lipgloss.Center,
+		overlay,
+	)
 }
 
 // RenderTaskDetailOverlay renders an overlay with detailed task information
@@ -130,6 +215,47 @@ func RenderTaskDetailOverlay(width, height int, selectedTask *task.Task) string 
 	)
 }
 
+// RenderHelpOverlay renders an overlay with all available commands
+func RenderHelpOverlay(m *Model) string {
+	// Calculate overlay dimensions
+	overlayWidth := int(float64(m.Width) * 0.7)
+
+	// Create styles for overlay components
+	overlayStyle := lipgloss.NewStyle().
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("63")).
+		Padding(1, 2).
+		Width(overlayWidth)
+
+	// Get the viewport content
+	helpContent := m.HelpViewport.View()
+
+	// Add scroll indicators if needed
+	scrollIndicator := ""
+	if !m.HelpViewport.AtBottom() {
+		scrollIndicator = "\n↓ Scroll for more"
+	}
+	if !m.HelpViewport.AtTop() {
+		scrollIndicator = "↑ More above\n" + scrollIndicator
+	}
+
+	if scrollIndicator != "" {
+		scrollStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Italic(true)
+		helpContent = helpContent + "\n" + scrollStyle.Render(scrollIndicator)
+	}
+
+	// Wrap the content in the overlay style
+	overlay := overlayStyle.Render(helpContent)
+
+	return lipgloss.Place(
+		m.Width,
+		m.Height,
+		lipgloss.Center,
+		lipgloss.Center,
+		overlay,
+	)
+}
+
 // Model represents the UI model for the application
 type Model struct {
 	Tasks              []task.Task
@@ -147,8 +273,19 @@ type Model struct {
 	Initialised        bool
 	SelectedTask       *task.Task
 	ShowDetailsOverlay bool
+	ShowHelpOverlay    bool
+	HelpViewport       viewport.Model // Viewport for scrollable help content
 	Command            *exec.Cmd
 	TaskRunning        bool
+
+	// Task picker fields
+	ShowTaskPicker     bool
+	TaskPickerInput    string
+	TaskPickerMatches  []task.Task
+	TaskPickerSelected int
+
+	// Selected tasks for batch execution
+	SelectedTasks []task.Task
 }
 
 // NewModel creates a new UI model
@@ -183,6 +320,17 @@ func NewModel() Model {
 		Initialised:        false,
 		SelectedTask:       nil,
 		ShowDetailsOverlay: false,
+		ShowHelpOverlay:    false,
+		HelpViewport:       viewport.New(0, 0),
+
+		// Initialize task picker fields
+		ShowTaskPicker:     false,
+		TaskPickerInput:    "",
+		TaskPickerMatches:  []task.Task{},
+		TaskPickerSelected: 0,
+
+		// Initialize selected tasks
+		SelectedTasks: []task.Task{},
 	}
 }
 
@@ -206,14 +354,49 @@ func (m Model) View() string {
 	// Build the layout
 	mainView := lipgloss.JoinHorizontal(lipgloss.Top, tableRendered, viewportRendered)
 
+	// Add selected tasks display if there are any
+	var selectedTasksText string
+	if len(m.SelectedTasks) > 0 {
+		taskNames := make([]string, len(m.SelectedTasks))
+		for i, t := range m.SelectedTasks {
+			taskNames[i] = t.Id
+		}
+		selectedTasksStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("39")).
+			Bold(true).
+			PaddingLeft(1)
+
+		selectedTasksText = selectedTasksStyle.Render(
+			fmt.Sprintf("Selected tasks (%d): %s",
+				len(m.SelectedTasks),
+				strings.Join(taskNames, ", ")),
+		)
+	}
+
 	// Add help text at the bottom
-	helpText := RenderHelpView(m.TaskRunning)
+	helpText := RenderHelpView(m.TaskRunning, m.ShowTaskPicker, len(m.SelectedTasks) > 0)
 
-	fullView := lipgloss.JoinVertical(lipgloss.Left, mainView, helpText)
+	// Combine everything
+	var fullView string
+	if len(m.SelectedTasks) > 0 {
+		fullView = lipgloss.JoinVertical(lipgloss.Left, mainView, selectedTasksText, helpText)
+	} else {
+		fullView = lipgloss.JoinVertical(lipgloss.Left, mainView, helpText)
+	}
 
-	// If overlay is visible, render it on top
+	// If details overlay is visible, render it on top
 	if m.ShowDetailsOverlay {
 		return RenderTaskDetailOverlay(m.Width, m.Height, m.SelectedTask)
+	}
+
+	// If task picker is visible, render it on top
+	if m.ShowTaskPicker {
+		return RenderTaskPicker(m.Width, m.Height, m.TaskPickerInput, m.TaskPickerMatches, m.TaskPickerSelected)
+	}
+
+	// If help overlay is visible, render it on top
+	if m.ShowHelpOverlay {
+		return RenderHelpOverlay(&m)
 	}
 
 	return fullView
@@ -318,10 +501,36 @@ func (m Model) handleWindowSizeMsg(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 
 // handleKeyMsg processes all keyboard input
 func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Handle details overlay keys first
+	// Handle task picker keys first
+	if m.ShowTaskPicker {
+		return m.handleTaskPickerKey(msg)
+	}
+
+	// Handle details overlay keys next
 	if m.ShowDetailsOverlay {
 		if msg.String() == "esc" || msg.String() == "i" {
 			m.ShowDetailsOverlay = false
+		}
+		return m, nil
+	}
+
+	// Handle help overlay keys
+	if m.ShowHelpOverlay {
+		switch msg.String() {
+		case "esc", "?":
+			m.ShowHelpOverlay = false
+		case "up", "k":
+			m.HelpViewport.LineUp(1)
+		case "down", "j":
+			m.HelpViewport.LineDown(1)
+		case "pgup":
+			m.HelpViewport.HalfViewUp()
+		case "pgdown":
+			m.HelpViewport.HalfViewDown()
+		case "home":
+			m.HelpViewport.GotoTop()
+		case "end":
+			m.HelpViewport.GotoBottom()
 		}
 		return m, nil
 	}
@@ -352,6 +561,14 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleExecuteKey()
 	case "ctrl+x":
 		return m.handleCancelTask()
+	case "/":
+		return m.handleOpenTaskPicker()
+	case "ctrl+e":
+		return m.handleExecuteSelectedTasks()
+	case "ctrl+d":
+		return m.handleClearSelectedTasks()
+	case "?":
+		return m.handleHelpKey()
 	}
 
 	return m, nil
@@ -422,6 +639,297 @@ func (m Model) handleCancelTask() (tea.Model, tea.Cmd) {
 		m.AppendAppMsg("Task cancelled\n")
 	}
 	return m, nil
+}
+
+// handleOpenTaskPicker opens the task picker
+func (m Model) handleOpenTaskPicker() (tea.Model, tea.Cmd) {
+	if m.TasksLoading {
+		return m, nil
+	}
+
+	m.ShowTaskPicker = true
+	m.TaskPickerInput = ""
+	m.TaskPickerMatches = m.Tasks // Initialize with all tasks
+	m.TaskPickerSelected = 0
+
+	return m, nil
+}
+
+// handleTaskPickerKey handles key presses when the task picker is open
+func (m Model) handleTaskPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		// Close the task picker
+		m.ShowTaskPicker = false
+		m.Focused = ControlTable
+		return m, nil
+
+	case "enter":
+		// Select the current task
+		if len(m.TaskPickerMatches) > 0 && m.TaskPickerSelected < len(m.TaskPickerMatches) {
+			selectedTask := m.TaskPickerMatches[m.TaskPickerSelected]
+
+			// Check if task is already in selected tasks
+			alreadySelected := false
+			for _, t := range m.SelectedTasks {
+				if t.Id == selectedTask.Id {
+					alreadySelected = true
+					break
+				}
+			}
+
+			// Add to selected tasks if not already there
+			if !alreadySelected {
+				m.SelectedTasks = append(m.SelectedTasks, selectedTask)
+				m.AppendAppMsg(fmt.Sprintf("Added task '%s' to execution list\n", selectedTask.Id))
+			}
+
+			// Close the picker
+			m.ShowTaskPicker = false
+			m.Focused = ControlTable
+		}
+		return m, nil
+
+	case "tab":
+		// Autocomplete with the selected match
+		if len(m.TaskPickerMatches) > 0 && m.TaskPickerSelected < len(m.TaskPickerMatches) {
+			m.TaskPickerInput = m.TaskPickerMatches[m.TaskPickerSelected].Id
+			// Update matches based on the new input
+			m.updateTaskPickerMatches()
+		}
+		return m, nil
+
+	case "up", "k":
+		// Navigate up in matches
+		if m.TaskPickerSelected > 0 {
+			m.TaskPickerSelected--
+		}
+		return m, nil
+
+	case "down", "j":
+		// Navigate down in matches
+		if m.TaskPickerSelected < len(m.TaskPickerMatches)-1 {
+			m.TaskPickerSelected++
+		}
+		return m, nil
+	}
+
+	// Handle character input
+	if len(msg.String()) == 1 || msg.String() == "backspace" {
+		if msg.String() == "backspace" && len(m.TaskPickerInput) > 0 {
+			// Remove last character
+			m.TaskPickerInput = m.TaskPickerInput[:len(m.TaskPickerInput)-1]
+		} else if msg.String() != "backspace" {
+			// Add character to input
+			m.TaskPickerInput += msg.String()
+		}
+
+		// Update matches based on the new input
+		m.updateTaskPickerMatches()
+		return m, nil
+	}
+
+	return m, nil
+}
+
+// updateTaskPickerMatches updates the task picker matches based on the current input
+func (m *Model) updateTaskPickerMatches() {
+	if m.TaskPickerInput == "" {
+		m.TaskPickerMatches = m.Tasks
+		return
+	}
+
+	// Filter tasks based on input
+	var matches []task.Task
+	input := strings.ToLower(m.TaskPickerInput)
+
+	for _, t := range m.Tasks {
+		// Check if input matches task ID
+		if strings.Contains(strings.ToLower(t.Id), input) {
+			matches = append(matches, t)
+			continue
+		}
+
+		// Check if input matches any alias
+		for _, alias := range t.Aliases {
+			if strings.Contains(strings.ToLower(alias), input) {
+				matches = append(matches, t)
+				break
+			}
+		}
+	}
+
+	m.TaskPickerMatches = matches
+
+	// Reset selected index if out of bounds
+	if m.TaskPickerSelected >= len(matches) {
+		m.TaskPickerSelected = 0
+	}
+}
+
+// handleExecuteSelectedTasks executes all selected tasks
+func (m Model) handleExecuteSelectedTasks() (tea.Model, tea.Cmd) {
+	if m.TasksLoading || len(m.SelectedTasks) == 0 {
+		return m, nil
+	}
+
+	m.AppendAppMsg(fmt.Sprintf("Executing %d selected tasks\n", len(m.SelectedTasks)))
+
+	// Execute the first task
+	return m.executeNextSelectedTask(0)
+}
+
+// handleClearSelectedTasks clears the list of selected tasks
+func (m Model) handleClearSelectedTasks() (tea.Model, tea.Cmd) {
+	if len(m.SelectedTasks) > 0 {
+		m.SelectedTasks = []task.Task{}
+		m.AppendAppMsg("Selected tasks cleared\n")
+	}
+	return m, nil
+}
+
+// generateHelpContent creates the help content with a two-column layout
+func generateHelpContent(overlayWidth int) string {
+	titleStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("63")).
+		MarginBottom(1)
+
+	sectionStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("69")).
+		MarginTop(1).
+		MarginBottom(1)
+
+	commandStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("241"))
+
+	// Calculate column width (accounting for padding and border)
+	contentWidth := overlayWidth - 6      // 6 = 2*2 padding + 2 border
+	columnWidth := (contentWidth / 2) - 2 // 2 for spacing between columns
+
+	// Build the content with two columns
+	content := titleStyle.Render("Help - Available Commands") + "\n\n"
+
+	// Navigation commands
+	content += sectionStyle.Render("Navigation") + "\n"
+
+	// Create two columns for navigation commands
+	navCol1 := lipgloss.NewStyle().Width(columnWidth).Render(
+		commandStyle.Render("tab: ") + "Switch focus\n" +
+			commandStyle.Render("↑/↓/j/k: ") + "Navigate\n" +
+			commandStyle.Render("q/esc: ") + "Quit")
+
+	navCol2 := lipgloss.NewStyle().Width(columnWidth).Render(
+		commandStyle.Render("↑/↓: ") + "Scroll help\n" +
+			commandStyle.Render("pgup/pgdn: ") + "Page up/down\n" +
+			commandStyle.Render("home/end: ") + "Top/bottom")
+
+	content += lipgloss.JoinHorizontal(lipgloss.Top, navCol1, "  ", navCol2) + "\n\n"
+
+	// Task commands
+	content += sectionStyle.Render("Task Management") + "\n"
+
+	taskCol1 := lipgloss.NewStyle().Width(columnWidth).Render(
+		commandStyle.Render("enter/e: ") + "Execute task\n" +
+			commandStyle.Render("i: ") + "Task details\n" +
+			commandStyle.Render("ctrl+r: ") + "Refresh tasks")
+
+	taskCol2 := lipgloss.NewStyle().Width(columnWidth).Render(
+		commandStyle.Render("ctrl+x: ") + "Cancel task\n" +
+			commandStyle.Render("ctrl+l: ") + "Clear output")
+
+	content += lipgloss.JoinHorizontal(lipgloss.Top, taskCol1, "  ", taskCol2) + "\n\n"
+
+	// Task picker commands
+	content += sectionStyle.Render("Task Picker") + "\n"
+
+	pickerCol1 := lipgloss.NewStyle().Width(columnWidth).Render(
+		commandStyle.Render("/: ") + "Open picker\n" +
+			commandStyle.Render("tab: ") + "Autocomplete")
+
+	pickerCol2 := lipgloss.NewStyle().Width(columnWidth).Render(
+		commandStyle.Render("enter: ") + "Select task\n" +
+			commandStyle.Render("esc: ") + "Close picker")
+
+	content += lipgloss.JoinHorizontal(lipgloss.Top, pickerCol1, "  ", pickerCol2) + "\n\n"
+
+	// Batch execution commands
+	content += sectionStyle.Render("Batch Execution") + "\n"
+
+	batchCol1 := lipgloss.NewStyle().Width(columnWidth).Render(
+		commandStyle.Render("ctrl+e: ") + "Execute tasks")
+
+	batchCol2 := lipgloss.NewStyle().Width(columnWidth).Render(
+		commandStyle.Render("ctrl+d: ") + "Clear tasks")
+
+	content += lipgloss.JoinHorizontal(lipgloss.Top, batchCol1, "  ", batchCol2) + "\n\n"
+
+	// Help commands
+	content += sectionStyle.Render("Help") + "\n"
+	content += commandStyle.Render("?: ") + "Show/hide help"
+
+	return content
+}
+
+// handleHelpKey toggles the help overlay
+func (m Model) handleHelpKey() (tea.Model, tea.Cmd) {
+	m.ShowHelpOverlay = !m.ShowHelpOverlay
+
+	// If showing the overlay, initialize the viewport content and dimensions
+	if m.ShowHelpOverlay {
+		// Calculate overlay dimensions
+		overlayWidth := int(float64(m.Width) * 0.7)
+		overlayHeight := int(float64(m.Height) * 0.7)
+		contentWidth := overlayWidth - 6    // 6 = 2*2 padding + 2 border
+		viewportHeight := overlayHeight - 6 // Account for padding and borders
+
+		// Set viewport dimensions
+		m.HelpViewport.Width = contentWidth
+		m.HelpViewport.Height = viewportHeight
+
+		// Generate and set content
+		content := generateHelpContent(overlayWidth)
+		m.HelpViewport.SetContent(content)
+		m.HelpViewport.GotoTop()
+	}
+
+	return m, nil
+}
+
+// executeNextSelectedTask executes the task at the given index and then executes the next task
+func (m Model) executeNextSelectedTask(index int) (tea.Model, tea.Cmd) {
+	if index >= len(m.SelectedTasks) {
+		// All tasks have been executed
+		m.AppendAppMsg("All selected tasks have been executed\n")
+		return m, nil
+	}
+
+	selectedTask := m.SelectedTasks[index]
+	m.AppendAppMsg(fmt.Sprintf("Executing task %d/%d: %s\n\n", index+1, len(m.SelectedTasks), selectedTask.Id))
+	m.TasksLoading = true
+
+	// Create a command that will execute the current task and then execute the next task
+	return m, tea.Batch(
+		task.ExecuteTask(selectedTask.Id, m.OutChan, m.CmdChan, m.ErrChan),
+		func() tea.Msg {
+			// This will be called after the task is executed
+			return task.TaskDoneMsg{}
+		},
+		m.WaitForTaskCommandMsg(),
+		m.WaitForTaskOutputMsg(),
+		m.WaitForTaskErrorMsg(),
+		func() tea.Msg {
+			// Wait a bit before executing the next task
+			return tea.Tick(500*time.Millisecond, func(time.Time) tea.Msg {
+				// Execute the next task
+				m.TasksLoading = false
+				_, cmd := m.executeNextSelectedTask(index + 1)
+				return cmd()
+			})
+		},
+	)
 }
 
 // handleTaskCommandMsg processes task command messages
@@ -501,6 +1009,17 @@ func (m *Model) HandleWindowResize(width, height int) {
 	m.Viewport.Width = viewportWidth
 	m.Viewport.Height = m.Height - 4
 	m.Viewport.HighPerformanceRendering = false
+
+	// Resize help viewport if needed
+	if m.ShowHelpOverlay {
+		overlayWidth := int(float64(m.Width) * 0.7)
+		overlayHeight := int(float64(m.Height) * 0.7)
+		contentWidth := overlayWidth - 6    // 6 = 2*2 padding + 2 border
+		viewportHeight := overlayHeight - 6 // Account for padding and borders
+
+		m.HelpViewport.Width = contentWidth
+		m.HelpViewport.Height = viewportHeight
+	}
 }
 
 // ExecuteSelectedTask executes the selected task
