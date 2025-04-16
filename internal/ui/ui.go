@@ -262,99 +262,17 @@ func (m Model) Init() tea.Cmd {
 }
 
 // Update handles messages and updates the model
+// Update handles messages and updates the model
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		if !m.Initialised {
-			m.Initialised = true
-		}
-		m.HandleWindowResize(msg.Width, msg.Height)
-		return m, nil
+		return m.handleWindowSizeMsg(msg)
 	case tea.KeyMsg:
-		if m.ShowDetailsOverlay {
-			if msg.String() == "esc" || msg.String() == "i" {
-				m.ShowDetailsOverlay = false
-				return m, nil
-			}
-			return m, nil
-		}
-		switch msg.String() {
-		case "q", "ctrl+c", "esc":
-			return m, tea.Quit
-		case "ctrl+l":
-			if m.TasksLoading {
-				return m, nil
-			}
-			m.Result = new(string)
-			m.Viewport.SetContent(*m.Result)
-			m.Viewport.GotoTop()
-			return m, nil
-		case "ctrl+r":
-			if m.TasksLoading {
-				return m, nil
-			}
-			return m, m.RefreshTaskList()
-		case "i":
-			if m.Focused == ControlTable && len(m.Tasks) > 0 && m.Table.SelectedRow() != nil {
-				selectedIndex := m.Table.Cursor()
-				m.SelectedTask = &m.Tasks[selectedIndex]
-				m.ShowDetailsOverlay = true
-			}
-			return m, nil
-		case "tab":
-			m.Focused = m.Focused.Tab()
-			if m.Focused == ControlTable {
-				m.Table.Focus()
-			} else {
-				m.Table.Blur()
-			}
-			return m, nil
-		case "up", "down", "j", "k":
-			switch m.Focused {
-			case ControlTable:
-				var cmd tea.Cmd
-				m.Table, cmd = m.Table.Update(msg)
-				cmds = append(cmds, cmd)
-				break
-			case ControlViewport:
-				var cmd tea.Cmd
-				m.Viewport, cmd = m.Viewport.Update(msg)
-				cmds = append(cmds, cmd)
-			default:
-				return m, nil
-			}
-			return m, tea.Batch(cmds...)
-		case "enter", "e":
-			if m.TasksLoading {
-				return m, nil
-			}
-			if m.Focused == ControlTable && len(m.Tasks) > 0 && m.Table.SelectedRow() != nil {
-				return m, m.ExecuteSelectedTask()
-			}
-			return m, nil
-		case "ctrl+x":
-			if m.TaskRunning {
-				if err := task.StopTaskProcess(m.Command.Process); err != nil {
-					m.AppendErrorMsg("Error cancelling task: " + err.Error())
-					return m, nil
-				}
-				m.TaskRunning = false
-				m.Command = nil
-				m.AppendAppMsg("Task cancelled\n")
-			}
-		}
+		return m.handleKeyMsg(msg)
 	case task.TaskCommandMsg:
-		m.TaskRunning = msg.TaskRunning
-		m.Command = msg.Command
-		cmds = append(cmds, m.WaitForTaskCommandMsg())
-		if msg.TaskRunning {
-			m.AppendAppMsg("TaskCommandMsg: running\n")
-		}
-		if !msg.TaskRunning {
-			m.AppendAppMsg("TaskCommandMsg: stopped\n")
-		}
+		return m.handleTaskCommandMsg(msg)
 	case task.TaskMsg:
 		m.AppendCommandOutput(string(msg))
 		cmds = append(cmds, m.WaitForTaskMsg())
@@ -382,9 +300,144 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.AppendAppMsg("Task list refreshed successfully!\n")
 		m.UpdateTaskTable()
 	}
+
 	var cmd tea.Cmd
 	m.Viewport, cmd = m.Viewport.Update(msg)
 	cmds = append(cmds, cmd)
+	return m, tea.Batch(cmds...)
+}
+
+// handleWindowSizeMsg handles window resize events
+func (m Model) handleWindowSizeMsg(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
+	if !m.Initialised {
+		m.Initialised = true
+	}
+	m.HandleWindowResize(msg.Width, msg.Height)
+	return m, nil
+}
+
+// handleKeyMsg processes all keyboard input
+func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Handle details overlay keys first
+	if m.ShowDetailsOverlay {
+		if msg.String() == "esc" || msg.String() == "i" {
+			m.ShowDetailsOverlay = false
+		}
+		return m, nil
+	}
+
+	// Handle general keys
+	switch msg.String() {
+	case "q", "ctrl+c", "esc":
+		return m, tea.Quit
+	case "ctrl+l":
+		if m.TasksLoading {
+			return m, nil
+		}
+		m.Result = new(string)
+		m.Viewport.SetContent(*m.Result)
+		m.Viewport.GotoTop()
+	case "ctrl+r":
+		if m.TasksLoading {
+			return m, nil
+		}
+		return m, m.RefreshTaskList()
+	case "i":
+		return m.handleInfoKey()
+	case "tab":
+		return m.handleTabKey()
+	case "up", "down", "j", "k":
+		return m.handleNavigationKey(msg)
+	case "enter", "e":
+		return m.handleExecuteKey()
+	case "ctrl+x":
+		return m.handleCancelTask()
+	}
+
+	return m, nil
+}
+
+// handleInfoKey shows task details when 'i' is pressed
+func (m Model) handleInfoKey() (tea.Model, tea.Cmd) {
+	if m.Focused == ControlTable && len(m.Tasks) > 0 && m.Table.SelectedRow() != nil {
+		selectedIndex := m.Table.Cursor()
+		m.SelectedTask = &m.Tasks[selectedIndex]
+		m.ShowDetailsOverlay = true
+	}
+	return m, nil
+}
+
+// handleTabKey handles tab key to switch focus between controls
+func (m Model) handleTabKey() (tea.Model, tea.Cmd) {
+	m.Focused = m.Focused.Tab()
+	if m.Focused == ControlTable {
+		m.Table.Focus()
+	} else {
+		m.Table.Blur()
+	}
+	return m, nil
+}
+
+// handleNavigationKey handles navigation keys (up, down, j, k)
+func (m Model) handleNavigationKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
+	var cmd tea.Cmd
+
+	switch m.Focused {
+	case ControlTable:
+		m.Table, cmd = m.Table.Update(msg)
+		cmds = append(cmds, cmd)
+	case ControlViewport:
+		m.Viewport, cmd = m.Viewport.Update(msg)
+		cmds = append(cmds, cmd)
+	default:
+		return m, nil
+	}
+
+	return m, tea.Batch(cmds...)
+}
+
+// handleExecuteKey executes the selected task when enter or 'e' is pressed
+func (m Model) handleExecuteKey() (tea.Model, tea.Cmd) {
+	if m.TasksLoading {
+		return m, nil
+	}
+
+	if m.Focused == ControlTable && len(m.Tasks) > 0 && m.Table.SelectedRow() != nil {
+		return m, m.ExecuteSelectedTask()
+	}
+
+	return m, nil
+}
+
+// handleCancelTask cancels a running task
+func (m Model) handleCancelTask() (tea.Model, tea.Cmd) {
+	if m.TaskRunning {
+		if err := task.StopTaskProcess(m.Command.Process); err != nil {
+			m.AppendErrorMsg("Error cancelling task: " + err.Error())
+			return m, nil
+		}
+		m.TaskRunning = false
+		m.Command = nil
+		m.AppendAppMsg("Task cancelled\n")
+	}
+	return m, nil
+}
+
+// handleTaskCommandMsg processes task command messages
+func (m Model) handleTaskCommandMsg(msg task.TaskCommandMsg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
+
+	m.TaskRunning = msg.TaskRunning
+	m.Command = msg.Command
+	cmds = append(cmds, m.WaitForTaskCommandMsg())
+
+	if msg.TaskRunning {
+		m.AppendAppMsg("TaskCommandMsg: running\n")
+	} else {
+		m.AppendAppMsg("TaskCommandMsg: stopped\n")
+	}
+
 	return m, tea.Batch(cmds...)
 }
 
