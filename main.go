@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"runtime"
 	"slices"
 	"strings"
 	"syscall"
@@ -214,7 +215,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "ctrl+x":
 			if m.taskRunning {
-				err := syscall.Kill(-m.command.Process.Pid, syscall.SIGINT)
+				sig := syscall.SIGINT
+				if runtime.GOOS == "windows" {
+					sig = syscall.SIGKILL
+				}
+				err := syscall.Kill(-m.command.Process.Pid, sig)
 				if err != nil {
 					m.appendErrorMsg("Error cancelling task: " + err.Error())
 					return m, nil
