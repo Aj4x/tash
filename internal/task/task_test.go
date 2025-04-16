@@ -1,4 +1,4 @@
-package main
+package task
 
 import (
 	"os"
@@ -6,24 +6,27 @@ import (
 	"testing"
 )
 
-func TestModel_AppendTask(t *testing.T) {
-	tasksData, err := os.ReadFile("sampletasks.txt")
+func TestParseTaskLine(t *testing.T) {
+	tasksData, err := os.ReadFile("testdata/sampletasks.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
 	tasks := string(tasksData)
-	m := NewModel()
-	for _, task := range strings.Split(tasks, "\n") {
-		m.appendTask(task)
+	var parsedTasks []Task
+	for _, taskLine := range strings.Split(tasks, "\n") {
+		task, ok := ParseTaskLine(taskLine)
+		if ok {
+			parsedTasks = append(parsedTasks, task)
+		}
 	}
-	if len(m.Tasks) != 12 {
-		t.Fatalf("Expected 12 tasks, got %d", len(m.Tasks))
+	if len(parsedTasks) != 12 {
+		t.Fatalf("Expected 12 tasks, got %d", len(parsedTasks))
 	}
 	const sysTask = "sys:disk-space"
 	const cmdTask = "cmd:ls"
 	const normalTask = "weather"
 	foundSys, foundCmd, foundNormal := false, false, false
-	for _, task := range m.Tasks {
+	for _, task := range parsedTasks {
 		t.Log("'" + task.Id + "'")
 		if task.Id == sysTask {
 			foundSys = true
