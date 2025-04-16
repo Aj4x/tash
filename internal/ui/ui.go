@@ -220,10 +220,10 @@ func (m Model) View() string {
 }
 
 // AppendToViewport adds text to the viewport
-func (m *Model) AppendToViewport(msg string) {
-	lines := TextWrap(msg, m.Viewport.Width-2)
+func (m *Model) AppendToViewport(msg string, style lipgloss.Style) {
+	lines := TextWrap(msg, m.Viewport.Width)
 	for _, line := range lines {
-		*m.Result += "\n" + line
+		*m.Result += "\n" + style.Render(line)
 	}
 	m.Viewport.SetContent(*m.Result)
 	m.Viewport.GotoBottom()
@@ -231,17 +231,17 @@ func (m *Model) AppendToViewport(msg string) {
 
 // AppendAppMsg adds an application message to the viewport
 func (m *Model) AppendAppMsg(msg string) {
-	m.AppendToViewport(AppMsgStyle.Render(msg))
+	m.AppendToViewport(msg, AppMsgStyle)
 }
 
 // AppendErrorMsg adds an error message to the viewport
 func (m *Model) AppendErrorMsg(msg string) {
-	m.AppendToViewport(ErrorMsgStyle.Render(msg))
+	m.AppendToViewport(msg, ErrorMsgStyle)
 }
 
 // AppendCommandOutput adds command output to the viewport
 func (m *Model) AppendCommandOutput(msg string) {
-	m.AppendToViewport(OutputStyle.Render(msg))
+	m.AppendToViewport(msg, OutputStyle)
 }
 
 // UpdateTaskTable updates the task table with the current tasks
@@ -493,7 +493,7 @@ func (m *Model) HandleWindowResize(width, height int) {
 	m.Height = height
 
 	tableWidth := int(float64(m.Width) * 0.4)
-	viewportWidth := m.Width - tableWidth - 2
+	viewportWidth := m.Width - tableWidth - 4
 
 	m.Table.SetWidth(tableWidth)
 	m.Table.SetHeight(m.Height - 4)
