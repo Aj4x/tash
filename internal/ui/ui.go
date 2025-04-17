@@ -15,18 +15,6 @@ import (
 	"github.com/Aj4x/tash/internal/task"
 )
 
-var (
-	TableStyle    = lipgloss.NewStyle().BorderStyle(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240"))
-	ViewportStyle = lipgloss.NewStyle().BorderStyle(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("240"))
-	FocusedStyle  = lipgloss.NewStyle().BorderStyle(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("69"))
-	HelpStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-
-	// Message Styles
-	AppMsgStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Bold(true) // Green for app messages
-	ErrorMsgStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true)  // Red for error messages
-	OutputStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("7"))             // Default color for regular output
-)
-
 // Control represents a UI control that can be focused
 type Control int
 
@@ -104,38 +92,9 @@ func RenderTaskPicker(width, height int, input string, matches []task.Task, sele
 	// Calculate overlay dimensions
 	overlayWidth := int(float64(width) * 0.7)
 
-	// Create styles for overlay components
-	overlayStyle := lipgloss.NewStyle().
-		BorderStyle(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("63")).
-		Padding(1, 2).
-		Width(overlayWidth)
-
-	titleStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("63")).
-		MarginBottom(1)
-
-	inputStyle := lipgloss.NewStyle().
-		BorderStyle(lipgloss.NormalBorder()).
-		BorderForeground(lipgloss.Color("241")).
-		Padding(0, 1).
-		Width(overlayWidth - 6)
-
-	matchStyle := lipgloss.NewStyle().
-		Padding(0, 1).
-		Width(overlayWidth - 6)
-
-	selectedMatchStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("229")).
-		Background(lipgloss.Color("63")).
-		Bold(true).
-		Padding(0, 1).
-		Width(overlayWidth - 6)
-
 	// Build the content
-	content := titleStyle.Render("Task Picker") + "\n\n"
-	content += "Search: " + inputStyle.Render(input) + "\n\n"
+	content := TaskPickerTitleStyle.Render("Task Picker") + "\n\n"
+	content += "Search: " + TaskPickerInputStyle(overlayWidth).Render(input) + "\n\n"
 
 	if len(matches) > 0 {
 		content += "Matching Tasks:\n"
@@ -146,9 +105,9 @@ func RenderTaskPicker(width, height int, input string, matches []task.Task, sele
 			}
 
 			if i == selectedIndex {
-				content += selectedMatchStyle.Render(taskText) + "\n"
+				content += TaskPickerSelectedMatchStyle(overlayWidth).Render(taskText) + "\n"
 			} else {
-				content += matchStyle.Render(taskText) + "\n"
+				content += TaskPickerMatchStyle(overlayWidth).Render(taskText) + "\n"
 			}
 		}
 	} else if input != "" {
@@ -156,7 +115,7 @@ func RenderTaskPicker(width, height int, input string, matches []task.Task, sele
 	}
 
 	// Wrap the content in the overlay style
-	overlay := overlayStyle.Render(content)
+	overlay := GeneralOverlayStyle(overlayWidth).Render(content)
 
 	return lipgloss.Place(
 		width,
@@ -177,34 +136,17 @@ func RenderTaskDetailOverlay(width, height int, selectedTask *task.Task) string 
 	overlayWidth := int(float64(width) * 0.7)
 	overlayHeight := int(float64(height) * 0.7)
 
-	// Create styles for overlay components
-	overlayStyle := lipgloss.NewStyle().
-		BorderStyle(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("63")).
-		Padding(1, 2).
-		Width(overlayWidth).
-		Height(overlayHeight)
-
-	titleStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("63")).
-		MarginBottom(1)
-
-	labelStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("241"))
-
 	// Format aliases as a comma-separated list
 	aliases := strings.Join(selectedTask.Aliases, ", ")
 
 	// Build the content
-	content := titleStyle.Render("Task Details") + "\n\n"
-	content += labelStyle.Render("ID: ") + selectedTask.Id + "\n\n"
-	content += labelStyle.Render("Description: ") + selectedTask.Desc + "\n\n"
-	content += labelStyle.Render("Aliases: ") + aliases + "\n"
+	content := TaskDetailOverlayTitleStyle.Render("Task Details") + "\n\n"
+	content += TaskDetailOverlayLabelStyle.Render("ID: ") + selectedTask.Id + "\n\n"
+	content += TaskDetailOverlayLabelStyle.Render("Description: ") + selectedTask.Desc + "\n\n"
+	content += TaskDetailOverlayLabelStyle.Render("Aliases: ") + aliases + "\n"
 
 	// Wrap the content in the overlay style
-	overlay := overlayStyle.Render(content)
+	overlay := TaskDetailOverlayStyle(overlayWidth, overlayHeight).Render(content)
 
 	return lipgloss.Place(
 		width,
@@ -219,13 +161,6 @@ func RenderTaskDetailOverlay(width, height int, selectedTask *task.Task) string 
 func RenderHelpOverlay(m *Model) string {
 	// Calculate overlay dimensions
 	overlayWidth := int(float64(m.Width) * 0.7)
-
-	// Create styles for overlay components
-	overlayStyle := lipgloss.NewStyle().
-		BorderStyle(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("63")).
-		Padding(1, 2).
-		Width(overlayWidth)
 
 	// Get the viewport content
 	helpContent := m.HelpViewport.View()
@@ -245,7 +180,7 @@ func RenderHelpOverlay(m *Model) string {
 	}
 
 	// Wrap the content in the overlay style
-	overlay := overlayStyle.Render(helpContent)
+	overlay := GeneralOverlayStyle(overlayWidth).Render(helpContent)
 
 	return lipgloss.Place(
 		m.Width,
@@ -303,8 +238,8 @@ func NewModel() Model {
 	)
 
 	t.SetStyles(table.Styles{
-		Header:   lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("69")),
-		Selected: lipgloss.NewStyle().Foreground(lipgloss.Color("229")).Bold(true),
+		Header:   TableHeaderStyle,
+		Selected: TableSelectedStyle,
 	})
 
 	return Model{
@@ -361,12 +296,7 @@ func (m Model) View() string {
 		for i, t := range m.SelectedTasks {
 			taskNames[i] = t.Id
 		}
-		selectedTasksStyle := lipgloss.NewStyle().
-			Foreground(lipgloss.Color("39")).
-			Bold(true).
-			PaddingLeft(1)
-
-		selectedTasksText = selectedTasksStyle.Render(
+		selectedTasksText = TableSelectedTaskStyle.Render(
 			fmt.Sprintf("Selected tasks (%d): %s",
 				len(m.SelectedTasks),
 				strings.Join(taskNames, ", ")),
@@ -790,85 +720,70 @@ func (m Model) handleClearSelectedTasks() (tea.Model, tea.Cmd) {
 
 // generateHelpContent creates the help content with a two-column layout
 func generateHelpContent(overlayWidth int) string {
-	titleStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("63")).
-		MarginBottom(1)
-
-	sectionStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("69")).
-		MarginTop(1).
-		MarginBottom(1)
-
-	commandStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("241"))
-
 	// Calculate column width (accounting for padding and border)
 	contentWidth := overlayWidth - 6      // 6 = 2*2 padding + 2 border
 	columnWidth := (contentWidth / 2) - 2 // 2 for spacing between columns
 
 	// Build the content with two columns
-	content := titleStyle.Render("Help - Available Commands") + "\n\n"
+	content := HelpTextTitleStyle.Render("Help - Available Commands") + "\n\n"
 
 	// Navigation commands
-	content += sectionStyle.Render("Navigation") + "\n"
+	content += HelpTextSectionStyle.Render("Navigation") + "\n"
 
 	// Create two columns for navigation commands
 	navCol1 := lipgloss.NewStyle().Width(columnWidth).Render(
-		commandStyle.Render("tab: ") + "Switch focus\n" +
-			commandStyle.Render("↑/↓/j/k: ") + "Navigate\n" +
-			commandStyle.Render("q/esc: ") + "Quit")
+		HelpTextCommandStyle.Render("tab: ") + "Switch focus\n" +
+			HelpTextCommandStyle.Render("↑/↓/j/k: ") + "Navigate\n" +
+			HelpTextCommandStyle.Render("q/esc: ") + "Quit")
 
 	navCol2 := lipgloss.NewStyle().Width(columnWidth).Render(
-		commandStyle.Render("↑/↓: ") + "Scroll help\n" +
-			commandStyle.Render("pgup/pgdn: ") + "Page up/down\n" +
-			commandStyle.Render("home/end: ") + "Top/bottom")
+		HelpTextCommandStyle.Render("↑/↓: ") + "Scroll help\n" +
+			HelpTextCommandStyle.Render("pgup/pgdn: ") + "Page up/down\n" +
+			HelpTextCommandStyle.Render("home/end: ") + "Top/bottom")
 
 	content += lipgloss.JoinHorizontal(lipgloss.Top, navCol1, "  ", navCol2) + "\n\n"
 
 	// Task commands
-	content += sectionStyle.Render("Task Management") + "\n"
+	content += HelpTextSectionStyle.Render("Task Management") + "\n"
 
 	taskCol1 := lipgloss.NewStyle().Width(columnWidth).Render(
-		commandStyle.Render("enter/e: ") + "Execute task\n" +
-			commandStyle.Render("i: ") + "Task details\n" +
-			commandStyle.Render("ctrl+r: ") + "Refresh tasks")
+		HelpTextCommandStyle.Render("enter/e: ") + "Execute task\n" +
+			HelpTextCommandStyle.Render("i: ") + "Task details\n" +
+			HelpTextCommandStyle.Render("ctrl+r: ") + "Refresh tasks")
 
 	taskCol2 := lipgloss.NewStyle().Width(columnWidth).Render(
-		commandStyle.Render("ctrl+x: ") + "Cancel task\n" +
-			commandStyle.Render("ctrl+l: ") + "Clear output")
+		HelpTextCommandStyle.Render("ctrl+x: ") + "Cancel task\n" +
+			HelpTextCommandStyle.Render("ctrl+l: ") + "Clear output")
 
 	content += lipgloss.JoinHorizontal(lipgloss.Top, taskCol1, "  ", taskCol2) + "\n\n"
 
 	// Task picker commands
-	content += sectionStyle.Render("Task Picker") + "\n"
+	content += HelpTextSectionStyle.Render("Task Picker") + "\n"
 
 	pickerCol1 := lipgloss.NewStyle().Width(columnWidth).Render(
-		commandStyle.Render("/: ") + "Open picker\n" +
-			commandStyle.Render("tab: ") + "Autocomplete")
+		HelpTextCommandStyle.Render("/: ") + "Open picker\n" +
+			HelpTextCommandStyle.Render("tab: ") + "Autocomplete")
 
 	pickerCol2 := lipgloss.NewStyle().Width(columnWidth).Render(
-		commandStyle.Render("enter: ") + "Select task\n" +
-			commandStyle.Render("esc: ") + "Close picker")
+		HelpTextCommandStyle.Render("enter: ") + "Select task\n" +
+			HelpTextCommandStyle.Render("esc: ") + "Close picker")
 
 	content += lipgloss.JoinHorizontal(lipgloss.Top, pickerCol1, "  ", pickerCol2) + "\n\n"
 
 	// Batch execution commands
-	content += sectionStyle.Render("Batch Execution") + "\n"
+	content += HelpTextSectionStyle.Render("Batch Execution") + "\n"
 
 	batchCol1 := lipgloss.NewStyle().Width(columnWidth).Render(
-		commandStyle.Render("ctrl+e: ") + "Execute tasks")
+		HelpTextCommandStyle.Render("ctrl+e: ") + "Execute tasks")
 
 	batchCol2 := lipgloss.NewStyle().Width(columnWidth).Render(
-		commandStyle.Render("ctrl+d: ") + "Clear tasks")
+		HelpTextCommandStyle.Render("ctrl+d: ") + "Clear tasks")
 
 	content += lipgloss.JoinHorizontal(lipgloss.Top, batchCol1, "  ", batchCol2) + "\n\n"
 
 	// Help commands
-	content += sectionStyle.Render("Help") + "\n"
-	content += commandStyle.Render("?: ") + "Show/hide help"
+	content += HelpTextSectionStyle.Render("Help") + "\n"
+	content += HelpTextCommandStyle.Render("?: ") + "Show/hide help"
 
 	return content
 }
