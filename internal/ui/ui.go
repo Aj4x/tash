@@ -50,42 +50,6 @@ func TextWrap(s string, n int) []string {
 	return lines
 }
 
-// RenderHelpView renders the help text at the bottom of the screen
-func RenderHelpView(taskRunning bool, showTaskPicker bool, hasSelectedTasks bool) string {
-	// If task picker is shown, show picker-specific help
-	if showTaskPicker {
-		help := []string{
-			"esc: close picker",
-			"↑/↓: navigate matches",
-			"tab: autocomplete",
-			"enter: select task",
-		}
-		return HelpStyle.Render(strings.Join(help, " • "))
-	}
-
-	// For normal view, show a more concise help text with the most important commands
-	help := []string{
-		"q: quit",
-		"tab: switch focus",
-		"↑/↓/j/k: navigate",
-		"enter/e: execute task",
-		"/: task picker",
-		"?: help",
-	}
-
-	// Add the Ctrl+x help text only when a task is running
-	if taskRunning {
-		help = append(help, "ctrl+x: cancel task")
-	}
-
-	// Add task selection related help text when there are selected tasks
-	if hasSelectedTasks {
-		help = append(help, "ctrl+e: execute selected tasks")
-	}
-
-	return HelpStyle.Render(strings.Join(help, " • "))
-}
-
 // RenderTaskPicker renders the task picker overlay
 func RenderTaskPicker(width, height int, input string, matches []task.Task, selectedIndex int) string {
 	// Calculate overlay dimensions
@@ -211,6 +175,7 @@ type Model struct {
 	HelpViewport       viewport.Model `json:"-"` // Viewport for scrollable help content
 	Command            *exec.Cmd      `json:"-"`
 	TaskRunning        bool
+	KeyBindings        KeyBindings `json:"-"` // Key bindings for the application
 
 	// Task picker fields
 	ShowTaskPicker     bool
@@ -258,6 +223,7 @@ func NewModel() Model {
 		ShowDetailsOverlay: false,
 		ShowHelpOverlay:    false,
 		HelpViewport:       viewport.New(0, 0),
+		KeyBindings:        DefaultKeyBindings(),
 
 		// Initialize task picker fields
 		ShowTaskPicker:     false,
@@ -305,7 +271,7 @@ func (m Model) View() string {
 	}
 
 	// Add help text at the bottom
-	helpText := RenderHelpView(m.TaskRunning, m.ShowTaskPicker, len(m.SelectedTasks) > 0)
+	helpText := m.KeyBindings.RenderHelpView(m.TaskRunning, m.ShowTaskPicker, len(m.SelectedTasks) > 0)
 
 	// Combine everything
 	var fullView string
@@ -447,7 +413,8 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Handle details overlay keys next
 	if m.ShowDetailsOverlay {
-		if msg.String() == "esc" || msg.String() == "i" {
+		// Check for keys that close the details overlay
+		if IsKeyMatch(msg, "esc/i") {
 			m.ShowDetailsOverlay = false
 		}
 		return m, nil
@@ -455,58 +422,100 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Handle help overlay keys
 	if m.ShowHelpOverlay {
-		switch msg.String() {
-		case "esc", "?":
+		// Check for keys that close the help overlay
+		if IsKeyMatch(msg, "esc") || IsKeyMatch(msg, "?") {
 			m.ShowHelpOverlay = false
-		case "up", "k":
+			return m, nil
+		}
+
+		// Handle navigation within help overlay
+		if IsKeyMatch(msg, "up") || IsKeyMatch(msg, "k") {
 			m.HelpViewport.LineUp(1)
-		case "down", "j":
+		} else if IsKeyMatch(msg, "down") || IsKeyMatch(msg, "j") {
 			m.HelpViewport.LineDown(1)
-		case "pgup":
-			m.HelpViewport.HalfViewUp()
-		case "pgdown":
-			m.HelpViewport.HalfViewDown()
-		case "home":
-			m.HelpViewport.GotoTop()
-		case "end":
-			m.HelpViewport.GotoBottom()
+		} else if IsKeyMatch(msg, "pgup/pgdn") {
+			if msg.String() == "pgup" {
+				m.HelpViewport.HalfViewUp()
+			} else {
+				m.HelpViewport.HalfViewDown()
+			}
+		} else if IsKeyMatch(msg, "home/end") {
+			if msg.String() == "home" {
+				m.HelpViewport.GotoTop()
+			} else {
+				m.HelpViewport.GotoBottom()
+			}
 		}
 		return m, nil
 	}
 
-	// Handle general keys
-	switch msg.String() {
-	case "q":
+	// Handle general keys using the key binding system
+	// Quit
+	if IsKeyMatch(msg, "q") {
 		return m, tea.Quit
-	case "ctrl+l":
+	}
+
+	// Clear output
+	if IsKeyMatch(msg, "ctrl+l") {
 		if m.TasksLoading {
 			return m, nil
 		}
 		m.Result = new(string)
 		m.Viewport.SetContent(*m.Result)
 		m.Viewport.GotoTop()
-	case "ctrl+r":
+		return m, nil
+	}
+
+	// Refresh tasks
+	if IsKeyMatch(msg, "ctrl+r") {
 		if m.TasksLoading {
 			return m, nil
 		}
 		return m, m.RefreshTaskList()
-	case "i":
+	}
+
+	// Task details
+	if IsKeyMatch(msg, "i") {
 		return m.handleInfoKey()
-	case "tab":
+	}
+
+	// Switch focus
+	if IsKeyMatch(msg, "tab") {
 		return m.handleTabKey()
-	case "up", "down", "j", "k":
+	}
+
+	// Navigation
+	if IsKeyMatch(msg, "↑/↓/j/k") {
 		return m.handleNavigationKey(msg)
-	case "enter", "e":
+	}
+
+	// Execute task
+	if IsKeyMatch(msg, "enter/e") {
 		return m.handleExecuteKey()
-	case "ctrl+x":
+	}
+
+	// Cancel task
+	if IsKeyMatch(msg, "ctrl+x") {
 		return m.handleCancelTask()
-	case "/":
+	}
+
+	// Open task picker
+	if IsKeyMatch(msg, "/") {
 		return m.handleOpenTaskPicker()
-	case "ctrl+e":
+	}
+
+	// Execute selected tasks
+	if IsKeyMatch(msg, "ctrl+e") {
 		return m.handleExecuteSelectedTasks()
-	case "ctrl+d":
+	}
+
+	// Clear selected tasks
+	if IsKeyMatch(msg, "ctrl+d") {
 		return m.handleClearSelectedTasks()
-	case "?":
+	}
+
+	// Show help
+	if IsKeyMatch(msg, "?") {
 		return m.handleHelpKey()
 	}
 
@@ -596,15 +605,15 @@ func (m Model) handleOpenTaskPicker() (tea.Model, tea.Cmd) {
 
 // handleTaskPickerKey handles key presses when the task picker is open
 func (m Model) handleTaskPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "esc":
-		// Close the task picker
+	// Close the task picker
+	if IsKeyMatch(msg, "esc") {
 		m.ShowTaskPicker = false
 		m.Focused = ControlTable
 		return m, nil
+	}
 
-	case "enter":
-		// Select the current task
+	// Select the current task
+	if IsKeyMatch(msg, "enter") {
 		if len(m.TaskPickerMatches) > 0 && m.TaskPickerSelected < len(m.TaskPickerMatches) {
 			selectedTask := m.TaskPickerMatches[m.TaskPickerSelected]
 
@@ -628,25 +637,28 @@ func (m Model) handleTaskPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.Focused = ControlTable
 		}
 		return m, nil
+	}
 
-	case "tab":
-		// Autocomplete with the selected match
+	// Autocomplete with the selected match
+	if IsKeyMatch(msg, "tab") {
 		if len(m.TaskPickerMatches) > 0 && m.TaskPickerSelected < len(m.TaskPickerMatches) {
 			m.TaskPickerInput = m.TaskPickerMatches[m.TaskPickerSelected].Id
 			// Update matches based on the new input
 			m.updateTaskPickerMatches()
 		}
 		return m, nil
+	}
 
-	case "up", "k":
-		// Navigate up in matches
+	// Navigate up in matches
+	if IsKeyMatch(msg, "up") || IsKeyMatch(msg, "k") {
 		if m.TaskPickerSelected > 0 {
 			m.TaskPickerSelected--
 		}
 		return m, nil
+	}
 
-	case "down", "j":
-		// Navigate down in matches
+	// Navigate down in matches
+	if IsKeyMatch(msg, "down") || IsKeyMatch(msg, "j") {
 		if m.TaskPickerSelected < len(m.TaskPickerMatches)-1 {
 			m.TaskPickerSelected++
 		}
@@ -654,11 +666,11 @@ func (m Model) handleTaskPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// Handle character input
-	if len(msg.String()) == 1 || msg.String() == "backspace" {
-		if msg.String() == "backspace" && len(m.TaskPickerInput) > 0 {
+	if len(msg.String()) == 1 || IsKeyMatch(msg, "backspace") {
+		if IsKeyMatch(msg, "backspace") && len(m.TaskPickerInput) > 0 {
 			// Remove last character
 			m.TaskPickerInput = m.TaskPickerInput[:len(m.TaskPickerInput)-1]
-		} else if msg.String() != "backspace" {
+		} else if !IsKeyMatch(msg, "backspace") {
 			// Add character to input
 			m.TaskPickerInput += msg.String()
 		}
@@ -730,76 +742,6 @@ func (m Model) handleClearSelectedTasks() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// generateHelpContent creates the help content with a two-column layout
-func generateHelpContent(overlayWidth int) string {
-	// Calculate column width (accounting for padding and border)
-	contentWidth := overlayWidth - 6      // 6 = 2*2 padding + 2 border
-	columnWidth := (contentWidth / 2) - 2 // 2 for spacing between columns
-
-	// Build the content with two columns
-	content := HelpTextTitleStyle.Render("Help - Available Commands") + "\n\n"
-
-	// Navigation commands
-	content += HelpTextSectionStyle.Render("Navigation") + "\n"
-
-	// Create two columns for navigation commands
-	navCol1 := lipgloss.NewStyle().Width(columnWidth).Render(
-		HelpTextCommandStyle.Render("tab: ") + "Switch focus\n" +
-			HelpTextCommandStyle.Render("↑/↓/j/k: ") + "Navigate\n" +
-			HelpTextCommandStyle.Render("q: ") + "Quit")
-
-	navCol2 := lipgloss.NewStyle().Width(columnWidth).Render(
-		HelpTextCommandStyle.Render("↑/↓: ") + "Scroll help\n" +
-			HelpTextCommandStyle.Render("pgup/pgdn: ") + "Page up/down\n" +
-			HelpTextCommandStyle.Render("home/end: ") + "Top/bottom")
-
-	content += lipgloss.JoinHorizontal(lipgloss.Top, navCol1, "  ", navCol2) + "\n\n"
-
-	// Task commands
-	content += HelpTextSectionStyle.Render("Task Management") + "\n"
-
-	taskCol1 := lipgloss.NewStyle().Width(columnWidth).Render(
-		HelpTextCommandStyle.Render("enter/e: ") + "Execute task\n" +
-			HelpTextCommandStyle.Render("i: ") + "Task details\n" +
-			HelpTextCommandStyle.Render("ctrl+r: ") + "Refresh tasks")
-
-	taskCol2 := lipgloss.NewStyle().Width(columnWidth).Render(
-		HelpTextCommandStyle.Render("ctrl+x: ") + "Cancel task\n" +
-			HelpTextCommandStyle.Render("ctrl+l: ") + "Clear output")
-
-	content += lipgloss.JoinHorizontal(lipgloss.Top, taskCol1, "  ", taskCol2) + "\n\n"
-
-	// Task picker commands
-	content += HelpTextSectionStyle.Render("Task Picker") + "\n"
-
-	pickerCol1 := lipgloss.NewStyle().Width(columnWidth).Render(
-		HelpTextCommandStyle.Render("/: ") + "Open picker\n" +
-			HelpTextCommandStyle.Render("tab: ") + "Autocomplete")
-
-	pickerCol2 := lipgloss.NewStyle().Width(columnWidth).Render(
-		HelpTextCommandStyle.Render("enter: ") + "Select task\n" +
-			HelpTextCommandStyle.Render("esc: ") + "Close picker")
-
-	content += lipgloss.JoinHorizontal(lipgloss.Top, pickerCol1, "  ", pickerCol2) + "\n\n"
-
-	// Batch execution commands
-	content += HelpTextSectionStyle.Render("Batch Execution") + "\n"
-
-	batchCol1 := lipgloss.NewStyle().Width(columnWidth).Render(
-		HelpTextCommandStyle.Render("ctrl+e: ") + "Execute tasks")
-
-	batchCol2 := lipgloss.NewStyle().Width(columnWidth).Render(
-		HelpTextCommandStyle.Render("ctrl+d: ") + "Clear tasks")
-
-	content += lipgloss.JoinHorizontal(lipgloss.Top, batchCol1, "  ", batchCol2) + "\n\n"
-
-	// Help commands
-	content += HelpTextSectionStyle.Render("Help") + "\n"
-	content += HelpTextCommandStyle.Render("?: ") + "Show/hide help"
-
-	return content
-}
-
 // handleHelpKey toggles the help overlay
 func (m Model) handleHelpKey() (tea.Model, tea.Cmd) {
 	m.ShowHelpOverlay = !m.ShowHelpOverlay
@@ -817,7 +759,7 @@ func (m Model) handleHelpKey() (tea.Model, tea.Cmd) {
 		m.HelpViewport.Height = viewportHeight
 
 		// Generate and set content
-		content := generateHelpContent(overlayWidth)
+		content := m.KeyBindings.GenerateHelpContent(overlayWidth)
 		modelBytes, err := json.MarshalIndent(m, "", "\t")
 		content += "\n\n" + HelpTextSectionStyle.Render("Model")
 		if err != nil {
