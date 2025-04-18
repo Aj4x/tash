@@ -21,13 +21,51 @@ type Task struct {
 type ListAllErrMsg struct{ Err error }
 type ListAllDoneMsg struct{}
 type TaskMsg string
+
+func (t TaskMsg) WaitForMessage(mo MessageObserver) tea.Cmd {
+	return func() tea.Msg {
+		return TaskMsg(<-mo.TaskChannel())
+	}
+}
+
 type TaskErrMsg struct{ Err error }
 type TaskOutputMsg string
+
+func (t TaskOutputMsg) WaitForMessage(mo MessageObserver) tea.Cmd {
+	return func() tea.Msg {
+		return TaskOutputMsg(<-mo.OutputChannel())
+	}
+}
+
 type TaskOutputErrMsg string
+
+func (t TaskOutputErrMsg) WaitForMessage(mo MessageObserver) tea.Cmd {
+	return func() tea.Msg {
+		return TaskOutputErrMsg(<-mo.ErrorChannel())
+	}
+}
+
 type TaskDoneMsg struct{}
 type TaskCommandMsg struct {
 	Command     *exec.Cmd
 	TaskRunning bool
+}
+
+func (t TaskCommandMsg) WaitForMessage(mo MessageObserver) tea.Cmd {
+	return func() tea.Msg {
+		return <-mo.CommandChannel()
+	}
+}
+
+type MessageListener interface {
+	WaitForMessage(mo MessageObserver) tea.Cmd
+}
+
+type MessageObserver interface {
+	TaskChannel() chan string
+	OutputChannel() chan string
+	ErrorChannel() chan string
+	CommandChannel() chan TaskCommandMsg
 }
 
 // ListAll executes the task --list-all command and sends the output to the target channel

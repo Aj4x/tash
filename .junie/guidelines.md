@@ -31,8 +31,9 @@ tash/
 │   │   ├── task.go             # Core task functionality
 │   │   └── task_test.go        # Tests for task package
 │   └── ui/             # User interface components
-│       ├── styles.go   # UI styles separate from logic
-│       └── ui.go       # UI implementation
+│       ├── keybindings.go   # UI keybindings
+│       ├── styles.go        # UI styles separate from logic
+│       └── ui.go            # UI implementation
 └── Taskfile.yml        # Project tasks for development
 ```
 
