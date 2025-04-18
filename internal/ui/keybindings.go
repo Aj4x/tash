@@ -43,11 +43,17 @@ func DefaultKeyBindings() KeyBindings {
 	return KeyBindings{
 		Sections: []KeyBindingSection{
 			{
+				Name: "Help",
+				KeyBindings: []KeyBinding{
+					{Key: "?", Description: "Show/hide help", Contexts: []Context{ContextGlobal}},
+				},
+			},
+			{
 				Name: "Navigation",
 				KeyBindings: []KeyBinding{
+					{Key: "q", Description: "Quit", Contexts: []Context{ContextGlobal}},
 					{Key: "tab", Description: "Switch focus", Contexts: []Context{ContextGlobal}},
 					{Key: "↑/↓/j/k", Description: "Navigate", Contexts: []Context{ContextGlobal}},
-					{Key: "q", Description: "Quit", Contexts: []Context{ContextGlobal}},
 					{Key: "pgup/pgdn", Description: "Page up/down", Contexts: []Context{ContextHelpOverlay, ContextViewport}},
 					{Key: "home/end", Description: "Top/bottom", Contexts: []Context{ContextHelpOverlay, ContextViewport}},
 				},
@@ -77,12 +83,6 @@ func DefaultKeyBindings() KeyBindings {
 				KeyBindings: []KeyBinding{
 					{Key: "ctrl+e", Description: "Execute tasks", Contexts: []Context{ContextGlobal}},
 					{Key: "ctrl+d", Description: "Clear tasks", Contexts: []Context{ContextGlobal}},
-				},
-			},
-			{
-				Name: "Help",
-				KeyBindings: []KeyBinding{
-					{Key: "?", Description: "Show/hide help", Contexts: []Context{ContextGlobal}},
 				},
 			},
 			{
