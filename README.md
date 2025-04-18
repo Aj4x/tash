@@ -35,7 +35,7 @@ go build -o tash ./cmd/tash
 ### Using Go Install
 
 ```bash
-go install github.com/Aj4x/tash@latest
+go install github.com/Aj4x/tash/cmd/tash@latest
 ```
 
 ## Usage
