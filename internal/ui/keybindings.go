@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"runtime/debug"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -172,7 +173,15 @@ func (kb KeyBindings) GenerateHelpContent(overlayWidth int) string {
 	columnWidth := (contentWidth / 2) - 2 // 2 for spacing between columns
 
 	// Build the content with two columns
-	content := HelpTextTitleStyle.Render("Help - Available Commands") + "\n\n"
+	content := HelpTextTitleStyle.Render("Help - Available Commands")
+
+	bi, ok := debug.ReadBuildInfo()
+	if ok {
+		version := bi.Main.Version
+		content += HelpStyle.Render("\n" + version)
+	}
+
+	content += "\n\n"
 
 	// Add each section
 	for _, section := range kb.Sections {
