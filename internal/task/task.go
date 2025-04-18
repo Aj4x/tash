@@ -12,9 +12,9 @@ import (
 
 // Task represents a task from the Taskfile
 type Task struct {
-	Id      string
-	Desc    string
-	Aliases []string
+	Id      string   `json:"id"`
+	Desc    string   `json:"desc,omitempty"`
+	Aliases []string `json:"aliases,omitempty"`
 }
 
 // Message types for Bubble Tea
@@ -126,6 +126,7 @@ func ExecuteTask(taskId string, target chan string, cmdChan chan TaskCommandMsg,
 		cmdChan <- TaskCommandMsg{Command: nil, TaskRunning: false}
 
 		if err != nil {
+			cmdChan <- TaskCommandMsg{Command: nil, TaskRunning: false}
 			var exitError *exec.ExitError
 			if errors.As(err, &exitError) {
 				return TaskErrMsg{Err: fmt.Errorf("task failed with exit code %d: %w", exitError.ExitCode(), err)}

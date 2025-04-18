@@ -1,7 +1,9 @@
 package ui
 
 import (
+	"encoding/json"
 	"fmt"
+	"github.com/Aj4x/tash/internal/task"
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -10,9 +12,6 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
-	"time"
-
-	"github.com/Aj4x/tash/internal/task"
 )
 
 // Control represents a UI control that can be focused
@@ -66,7 +65,7 @@ func RenderHelpView(taskRunning bool, showTaskPicker bool, hasSelectedTasks bool
 
 	// For normal view, show a more concise help text with the most important commands
 	help := []string{
-		"q/esc: quit",
+		"q: quit",
 		"tab: switch focus",
 		"↑/↓/j/k: navigate",
 		"enter/e: execute task",
@@ -193,15 +192,15 @@ func RenderHelpOverlay(m *Model) string {
 
 // Model represents the UI model for the application
 type Model struct {
-	Tasks              []task.Task
+	Tasks              []task.Task `json:"-"`
 	TasksLoading       bool
-	Result             *string
-	TaskChan           chan string
-	OutChan            chan string
-	ErrChan            chan string
-	CmdChan            chan task.TaskCommandMsg
-	Viewport           viewport.Model
-	Table              table.Model
+	Result             *string                  `json:"-"`
+	TaskChan           chan string              `json:"-"`
+	OutChan            chan string              `json:"-"`
+	ErrChan            chan string              `json:"-"`
+	CmdChan            chan task.TaskCommandMsg `json:"-"`
+	Viewport           viewport.Model           `json:"-"`
+	Table              table.Model              `json:"-"`
 	Focused            Control
 	Width              int
 	Height             int
@@ -209,18 +208,20 @@ type Model struct {
 	SelectedTask       *task.Task
 	ShowDetailsOverlay bool
 	ShowHelpOverlay    bool
-	HelpViewport       viewport.Model // Viewport for scrollable help content
-	Command            *exec.Cmd
+	HelpViewport       viewport.Model `json:"-"` // Viewport for scrollable help content
+	Command            *exec.Cmd      `json:"-"`
 	TaskRunning        bool
 
 	// Task picker fields
 	ShowTaskPicker     bool
 	TaskPickerInput    string
-	TaskPickerMatches  []task.Task
+	TaskPickerMatches  []task.Task `json:"-"`
 	TaskPickerSelected int
 
 	// Selected tasks for batch execution
-	SelectedTasks []task.Task
+	SelectedTasks         []task.Task
+	ExecutingBatch        bool
+	CurrentBatchTaskIndex int
 }
 
 // NewModel creates a new UI model
@@ -401,6 +402,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, m.WaitForTaskErrorMsg())
 	case task.TaskErrMsg:
 		m.AppendErrorMsg(msg.Err.Error())
+		if m.ExecutingBatch {
+			m.AppendErrorMsg("Batch execution aborted")
+			m.ExecutingBatch = false
+			m.CurrentBatchTaskIndex = -1
+		}
 		cmds = append(cmds, m.WaitForTaskMsg())
 	case task.ListAllErrMsg:
 		m.TasksLoading = false
@@ -408,6 +414,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case task.TaskDoneMsg:
 		m.TasksLoading = false
 		m.AppendAppMsg("Task executed successfully!\n")
+		if m.ExecutingBatch {
+			return m.executeNextSelectedTask(m.CurrentBatchTaskIndex)
+		}
 	case task.ListAllDoneMsg:
 		m.TasksLoading = false
 		m.AppendAppMsg("Task list refreshed successfully!\n")
@@ -467,7 +476,7 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Handle general keys
 	switch msg.String() {
-	case "q", "ctrl+c", "esc":
+	case "q":
 		return m, tea.Quit
 	case "ctrl+l":
 		if m.TasksLoading {
@@ -699,14 +708,17 @@ func (m *Model) updateTaskPickerMatches() {
 
 // handleExecuteSelectedTasks executes all selected tasks
 func (m Model) handleExecuteSelectedTasks() (tea.Model, tea.Cmd) {
-	if m.TasksLoading || len(m.SelectedTasks) == 0 {
+	if m.TasksLoading || len(m.SelectedTasks) == 0 || m.ExecutingBatch {
 		return m, nil
 	}
+
+	m.ExecutingBatch = true
+	m.CurrentBatchTaskIndex = 0
 
 	m.AppendAppMsg(fmt.Sprintf("Executing %d selected tasks\n", len(m.SelectedTasks)))
 
 	// Execute the first task
-	return m.executeNextSelectedTask(0)
+	return m.executeNextSelectedTask(m.CurrentBatchTaskIndex)
 }
 
 // handleClearSelectedTasks clears the list of selected tasks
@@ -734,7 +746,7 @@ func generateHelpContent(overlayWidth int) string {
 	navCol1 := lipgloss.NewStyle().Width(columnWidth).Render(
 		HelpTextCommandStyle.Render("tab: ") + "Switch focus\n" +
 			HelpTextCommandStyle.Render("↑/↓/j/k: ") + "Navigate\n" +
-			HelpTextCommandStyle.Render("q/esc: ") + "Quit")
+			HelpTextCommandStyle.Render("q: ") + "Quit")
 
 	navCol2 := lipgloss.NewStyle().Width(columnWidth).Render(
 		HelpTextCommandStyle.Render("↑/↓: ") + "Scroll help\n" +
@@ -806,6 +818,14 @@ func (m Model) handleHelpKey() (tea.Model, tea.Cmd) {
 
 		// Generate and set content
 		content := generateHelpContent(overlayWidth)
+		modelBytes, err := json.MarshalIndent(m, "", "\t")
+		content += "\n\n" + HelpTextSectionStyle.Render("Model")
+		if err != nil {
+			content += "\n" + HelpTextCommandStyle.Render(err.Error())
+		}
+		for _, text := range TextWrap(string(modelBytes), contentWidth) {
+			content += "\n" + HelpTextCommandStyle.Render(text)
+		}
 		m.HelpViewport.SetContent(content)
 		m.HelpViewport.GotoTop()
 	}
@@ -818,32 +838,20 @@ func (m Model) executeNextSelectedTask(index int) (tea.Model, tea.Cmd) {
 	if index >= len(m.SelectedTasks) {
 		// All tasks have been executed
 		m.AppendAppMsg("All selected tasks have been executed\n")
+		m.ExecutingBatch = false
+		m.CurrentBatchTaskIndex = -1
 		return m, nil
 	}
 
 	selectedTask := m.SelectedTasks[index]
+	m.CurrentBatchTaskIndex++
 	m.AppendAppMsg(fmt.Sprintf("Executing task %d/%d: %s\n\n", index+1, len(m.SelectedTasks), selectedTask.Id))
 	m.TasksLoading = true
 
 	// Create a command that will execute the current task and then execute the next task
 	return m, tea.Batch(
 		task.ExecuteTask(selectedTask.Id, m.OutChan, m.CmdChan, m.ErrChan),
-		func() tea.Msg {
-			// This will be called after the task is executed
-			return task.TaskDoneMsg{}
-		},
-		m.WaitForTaskCommandMsg(),
-		m.WaitForTaskOutputMsg(),
-		m.WaitForTaskErrorMsg(),
-		func() tea.Msg {
-			// Wait a bit before executing the next task
-			return tea.Tick(500*time.Millisecond, func(time.Time) tea.Msg {
-				// Execute the next task
-				m.TasksLoading = false
-				_, cmd := m.executeNextSelectedTask(index + 1)
-				return cmd()
-			})
-		},
+		m.WaitForTaskCommandMsg(), m.WaitForTaskErrorMsg(), m.WaitForTaskOutputMsg(),
 	)
 }
 
@@ -854,13 +862,6 @@ func (m Model) handleTaskCommandMsg(msg task.TaskCommandMsg) (tea.Model, tea.Cmd
 	m.TaskRunning = msg.TaskRunning
 	m.Command = msg.Command
 	cmds = append(cmds, m.WaitForTaskCommandMsg())
-
-	if msg.TaskRunning {
-		m.AppendAppMsg("TaskCommandMsg: running\n")
-	} else {
-		m.AppendAppMsg("TaskCommandMsg: stopped\n")
-	}
-
 	return m, tea.Batch(cmds...)
 }
 
