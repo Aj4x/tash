@@ -50,110 +50,6 @@ func TextWrap(s string, n int) []string {
 	return lines
 }
 
-// RenderTaskPicker renders the task picker overlay
-func RenderTaskPicker(width, height int, input string, matches []task.Task, selectedIndex int) string {
-	// Calculate overlay dimensions
-	overlayWidth := int(float64(width) * 0.7)
-
-	// Build the content
-	content := TaskPickerTitleStyle.Render("Task Picker") + "\n\n"
-	content += "Search: " + TaskPickerInputStyle(overlayWidth).Render(input) + "\n\n"
-
-	if len(matches) > 0 {
-		content += "Matching Tasks:\n"
-		for i, match := range matches {
-			taskText := match.Id
-			if len(match.Aliases) > 0 {
-				taskText += " (aliases: " + strings.Join(match.Aliases, ", ") + ")"
-			}
-
-			if i == selectedIndex {
-				content += TaskPickerSelectedMatchStyle(overlayWidth).Render(taskText) + "\n"
-			} else {
-				content += TaskPickerMatchStyle(overlayWidth).Render(taskText) + "\n"
-			}
-		}
-	} else if input != "" {
-		content += "No matches found"
-	}
-
-	// Wrap the content in the overlay style
-	overlay := GeneralOverlayStyle(overlayWidth).Render(content)
-
-	return lipgloss.Place(
-		width,
-		height,
-		lipgloss.Center,
-		lipgloss.Center,
-		overlay,
-	)
-}
-
-// RenderTaskDetailOverlay renders an overlay with detailed task information
-func RenderTaskDetailOverlay(width, height int, selectedTask *task.Task) string {
-	if selectedTask == nil {
-		return ""
-	}
-
-	// Calculate overlay dimensions
-	overlayWidth := int(float64(width) * 0.7)
-	overlayHeight := int(float64(height) * 0.7)
-
-	// Format aliases as a comma-separated list
-	aliases := strings.Join(selectedTask.Aliases, ", ")
-
-	// Build the content
-	content := TaskDetailOverlayTitleStyle.Render("Task Details") + "\n\n"
-	content += TaskDetailOverlayLabelStyle.Render("ID: ") + selectedTask.Id + "\n\n"
-	content += TaskDetailOverlayLabelStyle.Render("Description: ") + selectedTask.Desc + "\n\n"
-	content += TaskDetailOverlayLabelStyle.Render("Aliases: ") + aliases + "\n"
-
-	// Wrap the content in the overlay style
-	overlay := TaskDetailOverlayStyle(overlayWidth, overlayHeight).Render(content)
-
-	return lipgloss.Place(
-		width,
-		height,
-		lipgloss.Center,
-		lipgloss.Center,
-		overlay,
-	)
-}
-
-// RenderHelpOverlay renders an overlay with all available commands
-func RenderHelpOverlay(m *Model) string {
-	// Calculate overlay dimensions
-	overlayWidth := int(float64(m.Width) * 0.7)
-
-	// Get the viewport content
-	helpContent := m.HelpViewport.View()
-
-	// Add scroll indicators if needed
-	scrollIndicator := ""
-	if !m.HelpViewport.AtBottom() {
-		scrollIndicator = "\n↓ Scroll for more"
-	}
-	if !m.HelpViewport.AtTop() {
-		scrollIndicator = "↑ More above\n" + scrollIndicator
-	}
-
-	if scrollIndicator != "" {
-		scrollStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Italic(true)
-		helpContent = helpContent + "\n" + scrollStyle.Render(scrollIndicator)
-	}
-
-	// Wrap the content in the overlay style
-	overlay := GeneralOverlayStyle(overlayWidth).Render(helpContent)
-
-	return lipgloss.Place(
-		m.Width,
-		m.Height,
-		lipgloss.Center,
-		lipgloss.Center,
-		overlay,
-	)
-}
-
 // Model represents the UI model for the application
 type Model struct {
 	Tasks              []task.Task `json:"-"`
@@ -355,17 +251,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleTaskCommandMsg(msg)
 	case task.TaskMsg:
 		m.AppendCommandOutput(string(msg))
-		cmds = append(cmds, m.WaitForTaskMsg())
+		cmds = append(cmds, WaitForMessage[task.TaskMsg](m))
 		m.AppendTask(string(msg))
 		slices.SortFunc(m.Tasks, func(a, b task.Task) int {
 			return strings.Compare(a.Id, b.Id)
 		})
 	case task.TaskOutputMsg:
 		m.AppendCommandOutput(string(msg))
-		cmds = append(cmds, m.WaitForTaskOutputMsg())
+		cmds = append(cmds, WaitForMessage[task.TaskOutputMsg](m))
 	case task.TaskOutputErrMsg:
 		m.AppendErrorMsg(string(msg))
-		cmds = append(cmds, m.WaitForTaskErrorMsg())
+		cmds = append(cmds, WaitForMessage[task.TaskOutputErrMsg](m))
 	case task.TaskErrMsg:
 		m.AppendErrorMsg(msg.Err.Error())
 		if m.ExecutingBatch {
@@ -373,7 +269,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ExecutingBatch = false
 			m.CurrentBatchTaskIndex = -1
 		}
-		cmds = append(cmds, m.WaitForTaskMsg())
+		cmds = append(cmds, WaitForMessage[task.TaskMsg](m))
 	case task.ListAllErrMsg:
 		m.TasksLoading = false
 		m.AppendErrorMsg("Error: " + msg.Err.Error())
@@ -793,7 +689,9 @@ func (m Model) executeNextSelectedTask(index int) (tea.Model, tea.Cmd) {
 	// Create a command that will execute the current task and then execute the next task
 	return m, tea.Batch(
 		task.ExecuteTask(selectedTask.Id, m.OutChan, m.CmdChan, m.ErrChan),
-		m.WaitForTaskCommandMsg(), m.WaitForTaskErrorMsg(), m.WaitForTaskOutputMsg(),
+		WaitForMessage[task.TaskCommandMsg](m),
+		WaitForMessage[task.TaskOutputMsg](m),
+		WaitForMessage[task.TaskOutputErrMsg](m),
 	)
 }
 
@@ -803,7 +701,7 @@ func (m Model) handleTaskCommandMsg(msg task.TaskCommandMsg) (tea.Model, tea.Cmd
 
 	m.TaskRunning = msg.TaskRunning
 	m.Command = msg.Command
-	cmds = append(cmds, m.WaitForTaskCommandMsg())
+	cmds = append(cmds, WaitForMessage[task.TaskCommandMsg](m))
 	return m, tea.Batch(cmds...)
 }
 
@@ -812,36 +710,17 @@ func (m *Model) RefreshTaskList() tea.Cmd {
 	m.Tasks = []task.Task{}
 	m.TasksLoading = true
 	m.AppendAppMsg("\nRefreshing task list\n")
-	return tea.Batch(task.ListAll(m.TaskChan), m.WaitForTaskMsg())
+	return tea.Batch(task.ListAll(m.TaskChan), WaitForMessage[task.TaskMsg](m))
 }
 
-// WaitForTaskMsg waits for a task message
-func (m Model) WaitForTaskMsg() tea.Cmd {
-	return func() tea.Msg {
-		return task.TaskMsg(<-m.TaskChan)
-	}
-}
+func (m Model) TaskChannel() chan string                 { return m.TaskChan }
+func (m Model) OutputChannel() chan string               { return m.OutChan }
+func (m Model) ErrorChannel() chan string                { return m.ErrChan }
+func (m Model) CommandChannel() chan task.TaskCommandMsg { return m.CmdChan }
 
-// WaitForTaskOutputMsg waits for a task output message
-func (m Model) WaitForTaskOutputMsg() tea.Cmd {
-	return func() tea.Msg {
-		return task.TaskOutputMsg(<-m.OutChan)
-	}
-}
-
-// WaitForTaskErrorMsg waits for a task error message
-func (m Model) WaitForTaskErrorMsg() tea.Cmd {
-	return func() tea.Msg {
-		return task.TaskOutputErrMsg(<-m.ErrChan)
-	}
-}
-
-// WaitForTaskCommandMsg waits for a task command message
-func (m Model) WaitForTaskCommandMsg() tea.Cmd {
-	return func() tea.Msg {
-		msg := <-m.CmdChan
-		return msg
-	}
+func WaitForMessage[T task.MessageListener](mo task.MessageObserver) tea.Cmd {
+	var t T
+	return t.WaitForMessage(mo)
 }
 
 // AppendTask appends a task to the task list
@@ -893,8 +772,8 @@ func (m *Model) ExecuteSelectedTask() tea.Cmd {
 
 	return tea.Batch(
 		task.ExecuteTask(selectedTask.Id, m.OutChan, m.CmdChan, m.ErrChan),
-		m.WaitForTaskCommandMsg(),
-		m.WaitForTaskOutputMsg(),
-		m.WaitForTaskErrorMsg(),
+		WaitForMessage[task.TaskCommandMsg](m),
+		WaitForMessage[task.TaskOutputMsg](m),
+		WaitForMessage[task.TaskOutputErrMsg](m),
 	)
 }
