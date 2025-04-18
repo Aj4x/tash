@@ -52,29 +52,27 @@ func TextWrap(s string, n int) []string {
 
 // Model represents the UI model for the application
 type Model struct {
-	Tasks              []task.Task `json:"-"`
-	TasksLoading       bool
-	Result             *string                  `json:"-"`
-	TaskChan           chan string              `json:"-"`
-	OutChan            chan string              `json:"-"`
-	ErrChan            chan string              `json:"-"`
-	CmdChan            chan task.TaskCommandMsg `json:"-"`
-	Viewport           viewport.Model           `json:"-"`
-	Table              table.Model              `json:"-"`
-	Focused            Control
-	Width              int
-	Height             int
-	Initialised        bool
-	SelectedTask       *task.Task
-	ShowDetailsOverlay bool
-	ShowHelpOverlay    bool
-	HelpViewport       viewport.Model `json:"-"` // Viewport for scrollable help content
-	Command            *exec.Cmd      `json:"-"`
-	TaskRunning        bool
-	KeyBindings        KeyBindings `json:"-"` // Key bindings for the application
+	Tasks        []task.Task `json:"-"`
+	TasksLoading bool
+	Result       *string                  `json:"-"`
+	TaskChan     chan string              `json:"-"`
+	OutChan      chan string              `json:"-"`
+	ErrChan      chan string              `json:"-"`
+	CmdChan      chan task.TaskCommandMsg `json:"-"`
+	Viewport     viewport.Model           `json:"-"`
+	Table        table.Model              `json:"-"`
+	Focused      Control
+	Width        int
+	Height       int
+	Initialised  bool
+	SelectedTask *task.Task
+	State        UIState        // Current UI state (normal, task picker, details overlay, help overlay)
+	HelpViewport viewport.Model `json:"-"` // Viewport for scrollable help content
+	Command      *exec.Cmd      `json:"-"`
+	TaskRunning  bool
+	KeyBindings  KeyBindings `json:"-"` // Key bindings for the application
 
 	// Task picker fields
-	ShowTaskPicker     bool
 	TaskPickerInput    string
 	TaskPickerMatches  []task.Task `json:"-"`
 	TaskPickerSelected int
@@ -105,24 +103,22 @@ func NewModel() Model {
 	})
 
 	return Model{
-		Tasks:              []task.Task{},
-		Result:             new(string),
-		TaskChan:           make(chan string),
-		OutChan:            make(chan string),
-		ErrChan:            make(chan string),
-		CmdChan:            make(chan task.TaskCommandMsg),
-		Viewport:           viewport.New(0, 0),
-		Table:              t,
-		Focused:            ControlTable,
-		Initialised:        false,
-		SelectedTask:       nil,
-		ShowDetailsOverlay: false,
-		ShowHelpOverlay:    false,
-		HelpViewport:       viewport.New(0, 0),
-		KeyBindings:        DefaultKeyBindings(),
+		Tasks:        []task.Task{},
+		Result:       new(string),
+		TaskChan:     make(chan string),
+		OutChan:      make(chan string),
+		ErrChan:      make(chan string),
+		CmdChan:      make(chan task.TaskCommandMsg),
+		Viewport:     viewport.New(0, 0),
+		Table:        t,
+		Focused:      ControlTable,
+		Initialised:  false,
+		SelectedTask: nil,
+		State:        StateNormal,
+		HelpViewport: viewport.New(0, 0),
+		KeyBindings:  DefaultKeyBindings(),
 
 		// Initialize task picker fields
-		ShowTaskPicker:     false,
 		TaskPickerInput:    "",
 		TaskPickerMatches:  []task.Task{},
 		TaskPickerSelected: 0,
@@ -167,7 +163,7 @@ func (m Model) View() string {
 	}
 
 	// Add help text at the bottom
-	helpText := m.KeyBindings.RenderHelpView(m.TaskRunning, m.ShowTaskPicker, len(m.SelectedTasks) > 0)
+	helpText := m.KeyBindings.RenderHelpView(m.TaskRunning, m.State == StateTaskPicker, len(m.SelectedTasks) > 0)
 
 	// Combine everything
 	var fullView string
@@ -177,22 +173,17 @@ func (m Model) View() string {
 		fullView = lipgloss.JoinVertical(lipgloss.Left, mainView, helpText)
 	}
 
-	// If details overlay is visible, render it on top
-	if m.ShowDetailsOverlay {
+	// Render the appropriate view based on the current state
+	switch m.State {
+	case StateDetailsOverlay:
 		return RenderTaskDetailOverlay(m.Width, m.Height, m.SelectedTask)
-	}
-
-	// If task picker is visible, render it on top
-	if m.ShowTaskPicker {
+	case StateTaskPicker:
 		return RenderTaskPicker(m.Width, m.Height, m.TaskPickerInput, m.TaskPickerMatches, m.TaskPickerSelected)
-	}
-
-	// If help overlay is visible, render it on top
-	if m.ShowHelpOverlay {
+	case StateHelpOverlay:
 		return RenderHelpOverlay(&m)
+	default: // StateNormal
+		return fullView
 	}
-
-	return fullView
 }
 
 // AppendToViewport adds text to the viewport
@@ -302,120 +293,17 @@ func (m Model) handleWindowSizeMsg(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 
 // handleKeyMsg processes all keyboard input
 func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Handle task picker keys first
-	if m.ShowTaskPicker {
+	// Use a state machine approach to handle different UI states
+	switch m.State {
+	case StateTaskPicker:
 		return m.handleTaskPickerKey(msg)
+	case StateDetailsOverlay:
+		return m.handleDetailsOverlayKey(msg)
+	case StateHelpOverlay:
+		return m.handleHelpOverlayKey(msg)
+	default: // StateNormal
+		return m.handleNormalKey(msg)
 	}
-
-	// Handle details overlay keys next
-	if m.ShowDetailsOverlay {
-		// Check for keys that close the details overlay
-		if IsKeyMatch(msg, "esc/i") {
-			m.ShowDetailsOverlay = false
-		}
-		return m, nil
-	}
-
-	// Handle help overlay keys
-	if m.ShowHelpOverlay {
-		// Check for keys that close the help overlay
-		if IsKeyMatch(msg, "esc") || IsKeyMatch(msg, "?") {
-			m.ShowHelpOverlay = false
-			return m, nil
-		}
-
-		// Handle navigation within help overlay
-		if IsKeyMatch(msg, "up") || IsKeyMatch(msg, "k") {
-			m.HelpViewport.LineUp(1)
-		} else if IsKeyMatch(msg, "down") || IsKeyMatch(msg, "j") {
-			m.HelpViewport.LineDown(1)
-		} else if IsKeyMatch(msg, "pgup/pgdn") {
-			if msg.String() == "pgup" {
-				m.HelpViewport.HalfViewUp()
-			} else {
-				m.HelpViewport.HalfViewDown()
-			}
-		} else if IsKeyMatch(msg, "home/end") {
-			if msg.String() == "home" {
-				m.HelpViewport.GotoTop()
-			} else {
-				m.HelpViewport.GotoBottom()
-			}
-		}
-		return m, nil
-	}
-
-	// Handle general keys using the key binding system
-	// Quit
-	if IsKeyMatch(msg, "q") {
-		return m, tea.Quit
-	}
-
-	// Clear output
-	if IsKeyMatch(msg, "ctrl+l") {
-		if m.TasksLoading {
-			return m, nil
-		}
-		m.Result = new(string)
-		m.Viewport.SetContent(*m.Result)
-		m.Viewport.GotoTop()
-		return m, nil
-	}
-
-	// Refresh tasks
-	if IsKeyMatch(msg, "ctrl+r") {
-		if m.TasksLoading {
-			return m, nil
-		}
-		return m, m.RefreshTaskList()
-	}
-
-	// Task details
-	if IsKeyMatch(msg, "i") {
-		return m.handleInfoKey()
-	}
-
-	// Switch focus
-	if IsKeyMatch(msg, "tab") {
-		return m.handleTabKey()
-	}
-
-	// Navigation
-	if IsKeyMatch(msg, "↑/↓/j/k") {
-		return m.handleNavigationKey(msg)
-	}
-
-	// Execute task
-	if IsKeyMatch(msg, "enter/e") {
-		return m.handleExecuteKey()
-	}
-
-	// Cancel task
-	if IsKeyMatch(msg, "ctrl+x") {
-		return m.handleCancelTask()
-	}
-
-	// Open task picker
-	if IsKeyMatch(msg, "/") {
-		return m.handleOpenTaskPicker()
-	}
-
-	// Execute selected tasks
-	if IsKeyMatch(msg, "ctrl+e") {
-		return m.handleExecuteSelectedTasks()
-	}
-
-	// Clear selected tasks
-	if IsKeyMatch(msg, "ctrl+d") {
-		return m.handleClearSelectedTasks()
-	}
-
-	// Show help
-	if IsKeyMatch(msg, "?") {
-		return m.handleHelpKey()
-	}
-
-	return m, nil
 }
 
 // handleInfoKey shows task details when 'i' is pressed
@@ -423,7 +311,7 @@ func (m Model) handleInfoKey() (tea.Model, tea.Cmd) {
 	if m.Focused == ControlTable && len(m.Tasks) > 0 && m.Table.SelectedRow() != nil {
 		selectedIndex := m.Table.Cursor()
 		m.SelectedTask = &m.Tasks[selectedIndex]
-		m.ShowDetailsOverlay = true
+		m.State = StateDetailsOverlay
 	}
 	return m, nil
 }
@@ -491,7 +379,7 @@ func (m Model) handleOpenTaskPicker() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	m.ShowTaskPicker = true
+	m.State = StateTaskPicker
 	m.TaskPickerInput = ""
 	m.TaskPickerMatches = m.Tasks // Initialize with all tasks
 	m.TaskPickerSelected = 0
@@ -503,7 +391,7 @@ func (m Model) handleOpenTaskPicker() (tea.Model, tea.Cmd) {
 func (m Model) handleTaskPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Close the task picker
 	if IsKeyMatch(msg, "esc") {
-		m.ShowTaskPicker = false
+		m.State = StateNormal
 		m.Focused = ControlTable
 		return m, nil
 	}
@@ -529,7 +417,7 @@ func (m Model) handleTaskPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 
 			// Close the picker
-			m.ShowTaskPicker = false
+			m.State = StateNormal
 			m.Focused = ControlTable
 		}
 		return m, nil
@@ -640,10 +528,15 @@ func (m Model) handleClearSelectedTasks() (tea.Model, tea.Cmd) {
 
 // handleHelpKey toggles the help overlay
 func (m Model) handleHelpKey() (tea.Model, tea.Cmd) {
-	m.ShowHelpOverlay = !m.ShowHelpOverlay
+	// Toggle between normal state and help overlay state
+	if m.State == StateHelpOverlay {
+		m.State = StateNormal
+	} else {
+		m.State = StateHelpOverlay
+	}
 
 	// If showing the overlay, initialize the viewport content and dimensions
-	if m.ShowHelpOverlay {
+	if m.State == StateHelpOverlay {
 		// Calculate overlay dimensions
 		overlayWidth := int(float64(m.Width) * 0.7)
 		overlayHeight := int(float64(m.Height) * 0.7)
@@ -748,7 +641,7 @@ func (m *Model) HandleWindowResize(width, height int) {
 	m.Viewport.HighPerformanceRendering = false
 
 	// Resize help viewport if needed
-	if m.ShowHelpOverlay {
+	if m.State == StateHelpOverlay {
 		overlayWidth := int(float64(m.Width) * 0.7)
 		overlayHeight := int(float64(m.Height) * 0.7)
 		contentWidth := overlayWidth - 6    // 6 = 2*2 padding + 2 border
