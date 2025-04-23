@@ -22,6 +22,7 @@ func RenderTaskDetailOverlay(width, height int, selectedTask *task.Task) string 
 	// Build the content
 	content := TaskDetailOverlayTitleStyle.Render("Task Details") + "\n\n"
 	content += TaskDetailOverlayLabelStyle.Render("ID: ") + selectedTask.Id + "\n\n"
+	content += TaskDetailOverlayLabelStyle.Render("Summary: ") + selectedTask.Summary + "\n\n"
 	content += TaskDetailOverlayLabelStyle.Render("Description: ") + selectedTask.Desc + "\n\n"
 	content += TaskDetailOverlayLabelStyle.Render("Aliases: ") + aliases + "\n"
 

@@ -5,26 +5,28 @@ import (
 	"errors"
 	"fmt"
 	tea "github.com/charmbracelet/bubbletea"
-	"io"
 	"os/exec"
 	"strings"
+	"sync"
 )
 
 // Task represents a task from the Taskfile
 type Task struct {
-	Id      string   `json:"id"`
+	Id      string   `json:"name"`
 	Desc    string   `json:"desc,omitempty"`
+	Summary string   `json:"summary,omitempty"`
 	Aliases []string `json:"aliases,omitempty"`
 }
 
 // Message types for Bubble Tea
 type ListAllErrMsg struct{ Err error }
 type ListAllDoneMsg struct{}
-type TaskMsg string
 
-func (t TaskMsg) WaitForMessage(mo MessageObserver) tea.Cmd {
+type TaskJsonMsg string
+
+func (t TaskJsonMsg) WaitForMessage(mo MessageObserver) tea.Cmd {
 	return func() tea.Msg {
-		return TaskMsg(<-mo.TaskChannel())
+		return TaskJsonMsg(<-mo.TaskJsonChannel())
 	}
 }
 
@@ -62,16 +64,17 @@ type MessageListener interface {
 }
 
 type MessageObserver interface {
-	TaskChannel() chan string
+	TaskJsonChannel() chan string
 	OutputChannel() chan string
 	ErrorChannel() chan string
 	CommandChannel() chan TaskCommandMsg
 }
 
-// ListAll executes the task --list-all command and sends the output to the target channel
-func ListAll(target chan string) tea.Cmd {
+// ListAllJson executes the "task --list-all --json" command and sends the resulting JSON output to a target channel.
+// Returns various `tea.Msg` types based on command execution success or failure.
+func ListAllJson(target, errChan chan string) tea.Cmd {
 	return func() tea.Msg {
-		cmd := exec.Command("task", "--list-all")
+		cmd := exec.Command("task", "--list-all", "--json")
 		stdout, err := cmd.StdoutPipe()
 		if err != nil {
 			return ListAllErrMsg{Err: err}
@@ -83,18 +86,53 @@ func ListAll(target chan string) tea.Cmd {
 		if err := cmd.Start(); err != nil {
 			return ListAllErrMsg{Err: err}
 		}
-		reader := io.MultiReader(stdout, stderr)
-		buf := bufio.NewReader(reader)
-		for {
-			line, _, err := buf.ReadLine()
-			if err == io.EOF {
-				return ListAllDoneMsg{}
+		var taskOut, errOut string
+		stdoutScanner := bufio.NewScanner(stdout)
+		stdErrScanner := bufio.NewScanner(stderr)
+		wg := sync.WaitGroup{}
+		go func() {
+			started := false
+			for stdoutScanner.Scan() {
+				if !started {
+					wg.Add(1)
+					started = true
+				}
+				taskOut += stdoutScanner.Text()
 			}
+			if started {
+				wg.Done()
+			}
+		}()
+		go func() {
+			started := false
+			for stdErrScanner.Scan() {
+				if !started {
+					wg.Add(1)
+					started = true
+				}
+				errChan <- stdErrScanner.Text()
+			}
+			if started {
+				wg.Done()
+			}
+		}()
+		wg.Add(1)
+		go func() {
+			err := cmd.Wait()
 			if err != nil {
-				return ListAllErrMsg{Err: err}
+				errChan <- fmt.Sprintf("error getting task list: %s", err)
+				wg.Done()
 			}
-			target <- string(line)
+			wg.Done()
+		}()
+		wg.Wait()
+		if len(taskOut) > 0 {
+			target <- taskOut
 		}
+		if len(errOut) > 0 {
+			return TaskOutputErrMsg(errOut)
+		}
+		return ListAllDoneMsg{}
 	}
 }
 
