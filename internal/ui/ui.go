@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"github.com/Aj4x/tash/internal/task"
@@ -10,7 +11,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
 	"os/exec"
-	"slices"
 	"strings"
 )
 
@@ -56,6 +56,7 @@ type Model struct {
 	TasksLoading bool
 	Result       *string                  `json:"-"`
 	TaskChan     chan string              `json:"-"`
+	TaskJsonChan chan string              `json:"-"`
 	OutChan      chan string              `json:"-"`
 	ErrChan      chan string              `json:"-"`
 	CmdChan      chan task.TaskCommandMsg `json:"-"`
@@ -106,6 +107,7 @@ func NewModel() Model {
 		Tasks:        []task.Task{},
 		Result:       new(string),
 		TaskChan:     make(chan string),
+		TaskJsonChan: make(chan string),
 		OutChan:      make(chan string),
 		ErrChan:      make(chan string),
 		CmdChan:      make(chan task.TaskCommandMsg),
@@ -228,6 +230,17 @@ func (m Model) Init() tea.Cmd {
 	return m.RefreshTaskList()
 }
 
+func parseTasksJson(jsonStr string) ([]task.Task, error) {
+	var t struct {
+		Tasks []task.Task `json:"tasks"`
+	}
+	err := json.Unmarshal([]byte(jsonStr), &t)
+	if err != nil {
+		return nil, err
+	}
+	return t.Tasks, nil
+}
+
 // Update handles messages and updates the model
 // Update handles messages and updates the model
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -240,13 +253,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKeyMsg(msg)
 	case task.TaskCommandMsg:
 		return m.handleTaskCommandMsg(msg)
-	case task.TaskMsg:
-		m.AppendCommandOutput(string(msg))
-		cmds = append(cmds, WaitForMessage[task.TaskMsg](m))
-		m.AppendTask(string(msg))
-		slices.SortFunc(m.Tasks, func(a, b task.Task) int {
-			return strings.Compare(a.Id, b.Id)
-		})
+	case task.TaskJsonMsg:
+		return m.handleTaskJsonMsg(msg)
 	case task.TaskOutputMsg:
 		m.AppendCommandOutput(string(msg))
 		cmds = append(cmds, WaitForMessage[task.TaskOutputMsg](m))
@@ -260,7 +268,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ExecutingBatch = false
 			m.CurrentBatchTaskIndex = -1
 		}
-		cmds = append(cmds, WaitForMessage[task.TaskMsg](m))
+		cmds = append(cmds, WaitForMessage[task.TaskJsonMsg](m))
 	case task.ListAllErrMsg:
 		m.TasksLoading = false
 		m.AppendErrorMsg("Error: " + msg.Err.Error())
@@ -590,12 +598,32 @@ func (m Model) executeNextSelectedTask(index int) (tea.Model, tea.Cmd) {
 
 // handleTaskCommandMsg processes task command messages
 func (m Model) handleTaskCommandMsg(msg task.TaskCommandMsg) (tea.Model, tea.Cmd) {
-	var cmds []tea.Cmd
-
 	m.TaskRunning = msg.TaskRunning
 	m.Command = msg.Command
-	cmds = append(cmds, WaitForMessage[task.TaskCommandMsg](m))
-	return m, tea.Batch(cmds...)
+	return m, WaitForMessage[task.TaskCommandMsg](m)
+}
+
+// handleTaskJsonMsg processes task JSON messages
+func (m Model) handleTaskJsonMsg(msg task.TaskJsonMsg) (tea.Model, tea.Cmd) {
+	tasks, err := parseTasksJson(string(msg))
+	if err != nil {
+		m.AppendErrorMsg("Error parsing task list: " + err.Error())
+		return m, nil
+	}
+	var parsedJson bytes.Buffer
+	err = json.Indent(&parsedJson, []byte(msg), "", "\t")
+	if err != nil {
+		m.AppendErrorMsg("Error parsing json output for printing: " + err.Error())
+		m.AppendErrorMsg(string(msg))
+	} else {
+		m.AppendCommandOutput(string(parsedJson.Bytes()))
+	}
+	m.AppendAppMsg(fmt.Sprintf("Task list:\n%s\n", parsedJson.String()))
+	m.Tasks = tasks
+	m.AppendAppMsg(fmt.Sprintf("Tasks added: %d\n", len(m.Tasks)))
+	m.UpdateTaskTable()
+	m.TasksLoading = false
+	return m, tea.Batch(WaitForMessage[task.TaskOutputMsg](m), WaitForMessage[task.TaskOutputErrMsg](m))
 }
 
 // RefreshTaskList refreshes the task list
@@ -603,10 +631,14 @@ func (m *Model) RefreshTaskList() tea.Cmd {
 	m.Tasks = []task.Task{}
 	m.TasksLoading = true
 	m.AppendAppMsg("\nRefreshing task list\n")
-	return tea.Batch(task.ListAll(m.TaskChan), WaitForMessage[task.TaskMsg](m))
+	return tea.Batch(task.ListAllJson(m.TaskJsonChan, m.ErrChan),
+		WaitForMessage[task.TaskJsonMsg](m),
+		WaitForMessage[task.TaskOutputMsg](m),
+		WaitForMessage[task.TaskOutputErrMsg](m))
 }
 
 func (m Model) TaskChannel() chan string                 { return m.TaskChan }
+func (m Model) TaskJsonChannel() chan string             { return m.TaskJsonChan }
 func (m Model) OutputChannel() chan string               { return m.OutChan }
 func (m Model) ErrorChannel() chan string                { return m.ErrChan }
 func (m Model) CommandChannel() chan task.TaskCommandMsg { return m.CmdChan }
@@ -638,7 +670,6 @@ func (m *Model) HandleWindowResize(width, height int) {
 
 	m.Viewport.Width = viewportWidth
 	m.Viewport.Height = m.Height - 4
-	m.Viewport.HighPerformanceRendering = false
 
 	// Resize help viewport if needed
 	if m.State == StateHelpOverlay {
