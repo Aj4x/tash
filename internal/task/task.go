@@ -2,8 +2,10 @@ package task
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
+	"github.com/Aj4x/tash/internal/msgbus"
 	tea "github.com/charmbracelet/bubbletea"
 	"os/exec"
 	"strings"
@@ -17,6 +19,73 @@ type Task struct {
 	Summary string   `json:"summary,omitempty"`
 	Aliases []string `json:"aliases,omitempty"`
 }
+
+type Type string
+
+const (
+	TypeTaskOutput      = Type("task.output")
+	TypeTaskError       = Type("task.error")
+	TypeTaskJSON        = Type("task.json")
+	TypeTaskCommand     = Type("task.command")
+	TypeTaskDone        = Type("task.done")
+	TypeTaskListAllDone = Type("list.done")
+	TypeTaskListAllErr  = Type("list.error")
+)
+
+type Message struct {
+	Type      Type
+	ctx       context.Context
+	ctxCancel context.CancelFunc
+}
+
+type ContextKey string
+
+const (
+	CtxKeyError       = ContextKey("error")
+	CtxKeyOutput      = ContextKey("output")
+	CtxKeyCommand     = ContextKey("command")
+	CtxKeyTaskRunning = ContextKey("taskRunning")
+)
+
+func (m *Message) Error() error {
+	return m.ctx.Value(CtxKeyError).(error)
+}
+
+func (m *Message) Output() string {
+	return m.ctx.Value(CtxKeyOutput).(string)
+}
+
+func (m *Message) Command() *exec.Cmd {
+	return m.ctx.Value(CtxKeyCommand).(*exec.Cmd)
+}
+
+func (m *Message) TaskRunning() bool {
+	return m.ctx.Value(CtxKeyTaskRunning).(bool)
+}
+
+func (m *Message) Wait() {
+	if m.Type != TypeTaskCommand {
+		return
+	}
+	<-m.ctx.Done()
+}
+
+func (m *Message) Cancel() {
+	if m.Type != TypeTaskCommand {
+		return
+	}
+	m.ctxCancel()
+}
+
+const (
+	TopicTaskOutput      = msgbus.Topic("task.output")
+	TopicTaskError       = msgbus.Topic("task.error")
+	TopicTaskJSON        = msgbus.Topic("task.json")
+	TopicTaskCommand     = msgbus.Topic("task.command")
+	TopicTaskDone        = msgbus.Topic("task.done")
+	TopicTaskListAllDone = msgbus.Topic("list.done")
+	TopicTaskListAllErr  = msgbus.Topic("list.error")
+)
 
 // Message types for Bubble Tea
 type ListAllErrMsg struct{ Err error }
@@ -48,6 +117,7 @@ func (t TaskOutputErrMsg) WaitForMessage(mo MessageObserver) tea.Cmd {
 }
 
 type TaskDoneMsg struct{}
+
 type TaskCommandMsg struct {
 	Command     *exec.Cmd
 	TaskRunning bool

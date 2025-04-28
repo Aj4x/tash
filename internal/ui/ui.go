@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/Aj4x/tash/internal/msgbus"
 	"github.com/Aj4x/tash/internal/task"
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -52,7 +53,8 @@ func TextWrap(s string, n int) []string {
 
 // Model represents the UI model for the application
 type Model struct {
-	Tasks        []task.Task `json:"-"`
+	MessageBus   msgbus.PublisherSubscriber[task.Message] `json:"-"`
+	Tasks        []task.Task                              `json:"-"`
 	TasksLoading bool
 	Result       *string                  `json:"-"`
 	TaskChan     chan string              `json:"-"`
@@ -85,7 +87,7 @@ type Model struct {
 }
 
 // NewModel creates a new UI model
-func NewModel() Model {
+func NewModel(bus msgbus.PublisherSubscriber[task.Message]) Model {
 	columns := []table.Column{
 		{Title: "Id", Width: 30},
 		{Title: "Description", Width: 40},
@@ -104,6 +106,7 @@ func NewModel() Model {
 	})
 
 	return Model{
+		MessageBus:   bus,
 		Tasks:        []task.Task{},
 		Result:       new(string),
 		TaskChan:     make(chan string),

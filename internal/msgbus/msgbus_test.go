@@ -11,7 +11,7 @@ import (
 )
 
 func TestNewMessageBus(t *testing.T) {
-	bus := msgbus.NewMessageBus()
+	bus := msgbus.NewMessageBus[[]byte]()
 	if bus == nil {
 		t.Error("Expected non-nil MessageBus, got nil")
 	}
@@ -19,9 +19,9 @@ func TestNewMessageBus(t *testing.T) {
 
 func TestSubscribe(t *testing.T) {
 	t.Run("Valid subscription", func(t *testing.T) {
-		bus := msgbus.NewMessageBus()
+		bus := msgbus.NewMessageBus[[]byte]()
 		topic := msgbus.Topic("test-topic")
-		handler := make(msgbus.MessageHandler, 10)
+		handler := make(msgbus.MessageHandler[[]byte], 10)
 
 		key, err := bus.Subscribe(topic, handler)
 
@@ -38,7 +38,7 @@ func TestSubscribe(t *testing.T) {
 	})
 
 	t.Run("Nil handler", func(t *testing.T) {
-		bus := msgbus.NewMessageBus()
+		bus := msgbus.NewMessageBus[[]byte]()
 		topic := msgbus.Topic("test-topic")
 
 		_, err := bus.Subscribe(topic, nil)
@@ -49,10 +49,10 @@ func TestSubscribe(t *testing.T) {
 	})
 
 	t.Run("Multiple subscriptions to same topic", func(t *testing.T) {
-		bus := msgbus.NewMessageBus()
+		bus := msgbus.NewMessageBus[[]byte]()
 		topic := msgbus.Topic("test-topic")
-		handler1 := make(msgbus.MessageHandler, 10)
-		handler2 := make(msgbus.MessageHandler, 10)
+		handler1 := make(msgbus.MessageHandler[[]byte], 10)
+		handler2 := make(msgbus.MessageHandler[[]byte], 10)
 
 		key1, err1 := bus.Subscribe(topic, handler1)
 		key2, err2 := bus.Subscribe(topic, handler2)
@@ -73,17 +73,17 @@ func TestSubscribe(t *testing.T) {
 
 func TestPublish(t *testing.T) {
 	t.Run("Basic publish and receive", func(t *testing.T) {
-		bus := msgbus.NewMessageBus()
+		bus := msgbus.NewMessageBus[[]byte]()
 		topic := msgbus.Topic("test-topic")
 		message := []byte("test message")
-		handler := make(msgbus.MessageHandler, 10)
+		handler := make(msgbus.MessageHandler[[]byte], 10)
 
 		_, err := bus.Subscribe(topic, handler)
 		if err != nil {
 			t.Fatalf("Failed to subscribe: %v", err)
 		}
 
-		bus.Publish(msgbus.TopicMessage{
+		bus.Publish(msgbus.TopicMessage[[]byte]{
 			Topic:   topic,
 			Message: message,
 		})
@@ -104,11 +104,11 @@ func TestPublish(t *testing.T) {
 	})
 
 	t.Run("Publish to multiple subscribers", func(t *testing.T) {
-		bus := msgbus.NewMessageBus()
+		bus := msgbus.NewMessageBus[[]byte]()
 		topic := msgbus.Topic("test-topic")
 		message := []byte("test message")
-		handler1 := make(msgbus.MessageHandler, 10)
-		handler2 := make(msgbus.MessageHandler, 10)
+		handler1 := make(msgbus.MessageHandler[[]byte], 10)
+		handler2 := make(msgbus.MessageHandler[[]byte], 10)
 
 		_, err1 := bus.Subscribe(topic, handler1)
 		_, err2 := bus.Subscribe(topic, handler2)
@@ -117,7 +117,7 @@ func TestPublish(t *testing.T) {
 			t.Fatalf("Failed to subscribe: %v, %v", err1, err2)
 		}
 
-		bus.Publish(msgbus.TopicMessage{
+		bus.Publish(msgbus.TopicMessage[[]byte]{
 			Topic:   topic,
 			Message: message,
 		})
@@ -140,12 +140,12 @@ func TestPublish(t *testing.T) {
 	})
 
 	t.Run("Publish to nonexistent topic", func(t *testing.T) {
-		bus := msgbus.NewMessageBus()
+		bus := msgbus.NewMessageBus[[]byte]()
 		topic := msgbus.Topic("nonexistent-topic")
 		message := []byte("test message")
 
 		// This should not panic
-		bus.Publish(msgbus.TopicMessage{
+		bus.Publish(msgbus.TopicMessage[[]byte]{
 			Topic:   topic,
 			Message: message,
 		})
@@ -154,9 +154,9 @@ func TestPublish(t *testing.T) {
 
 func TestUnsubscribe(t *testing.T) {
 	t.Run("Basic unsubscribe", func(t *testing.T) {
-		bus := msgbus.NewMessageBus()
+		bus := msgbus.NewMessageBus[[]byte]()
 		topic := msgbus.Topic("test-topic")
-		handler := make(msgbus.MessageHandler, 10)
+		handler := make(msgbus.MessageHandler[[]byte], 10)
 
 		key, err := bus.Subscribe(topic, handler)
 		if err != nil {
@@ -166,7 +166,7 @@ func TestUnsubscribe(t *testing.T) {
 		bus.Unsubscribe(topic, key)
 
 		// Publish after unsubscribing should not deliver messages
-		bus.Publish(msgbus.TopicMessage{
+		bus.Publish(msgbus.TopicMessage[[]byte]{
 			Topic:   topic,
 			Message: []byte("test message"),
 		})
@@ -182,10 +182,10 @@ func TestUnsubscribe(t *testing.T) {
 	})
 
 	t.Run("Unsubscribe one of multiple subscribers", func(t *testing.T) {
-		bus := msgbus.NewMessageBus()
+		bus := msgbus.NewMessageBus[[]byte]()
 		topic := msgbus.Topic("test-topic")
-		handler1 := make(msgbus.MessageHandler, 10)
-		handler2 := make(msgbus.MessageHandler, 10)
+		handler1 := make(msgbus.MessageHandler[[]byte], 10)
+		handler2 := make(msgbus.MessageHandler[[]byte], 10)
 
 		key1, _ := bus.Subscribe(topic, handler1)
 		_, _ = bus.Subscribe(topic, handler2)
@@ -193,7 +193,7 @@ func TestUnsubscribe(t *testing.T) {
 		bus.Unsubscribe(topic, key1)
 
 		message := []byte("test message")
-		bus.Publish(msgbus.TopicMessage{
+		bus.Publish(msgbus.TopicMessage[[]byte]{
 			Topic:   topic,
 			Message: message,
 		})
@@ -221,7 +221,7 @@ func TestUnsubscribe(t *testing.T) {
 	})
 
 	t.Run("Unsubscribe nonexistent subscription", func(t *testing.T) {
-		bus := msgbus.NewMessageBus()
+		bus := msgbus.NewMessageBus[[]byte]()
 		topic := msgbus.Topic("test-topic")
 		nonexistentKey := uuid.UUID{} // Empty UUID
 
@@ -230,7 +230,7 @@ func TestUnsubscribe(t *testing.T) {
 	})
 
 	t.Run("Unsubscribe nonexistent topic", func(t *testing.T) {
-		bus := msgbus.NewMessageBus()
+		bus := msgbus.NewMessageBus[[]byte]()
 		topic := msgbus.Topic("nonexistent-topic")
 		key := uuid.UUID{} // Empty UUID
 
@@ -241,18 +241,18 @@ func TestUnsubscribe(t *testing.T) {
 
 func TestConcurrentAccess(t *testing.T) {
 	t.Run("Concurrent subscriptions and publications", func(t *testing.T) {
-		bus := msgbus.NewMessageBus()
+		bus := msgbus.NewMessageBus[[]byte]()
 		var wg sync.WaitGroup
 
 		// Create a bunch of topics and handlers
 		topicCount := 10
 		pubCount := 5
 		topics := make([]msgbus.Topic, topicCount)
-		handlers := make([]msgbus.MessageHandler, topicCount)
+		handlers := make([]msgbus.MessageHandler[[]byte], topicCount)
 
 		for i := 0; i < topicCount; i++ {
 			topics[i] = msgbus.Topic(fmt.Sprintf("topic-%d", i))
-			handlers[i] = make(msgbus.MessageHandler, pubCount)
+			handlers[i] = make(msgbus.MessageHandler[[]byte], pubCount)
 
 			// Subscribe
 			_, err := bus.Subscribe(topics[i], handlers[i])
@@ -268,7 +268,7 @@ func TestConcurrentAccess(t *testing.T) {
 				defer wg.Done()
 				for j := 0; j < pubCount; j++ {
 					msg := []byte(fmt.Sprintf("message-%d", j))
-					bus.Publish(msgbus.TopicMessage{
+					bus.Publish(msgbus.TopicMessage[[]byte]{
 						Topic:   topics[topicIndex],
 						Message: msg,
 					})
@@ -307,10 +307,10 @@ func TestErrorCases(t *testing.T) {
 
 func TestTimeout(t *testing.T) {
 	t.Run("Publish with slow consumer", func(t *testing.T) {
-		bus := msgbus.NewMessageBus()
+		bus := msgbus.NewMessageBus[[]byte]()
 		topic := msgbus.Topic("test-topic")
 		// Create unbuffered channel to simulate slow consumer
-		handler := make(msgbus.MessageHandler)
+		handler := make(msgbus.MessageHandler[[]byte])
 
 		_, err := bus.Subscribe(topic, handler)
 		if err != nil {
@@ -321,7 +321,7 @@ func TestTimeout(t *testing.T) {
 		noMessages := 3
 		receivedMessages := 0
 		for i := 0; i < noMessages; i++ {
-			bus.Publish(msgbus.TopicMessage{
+			bus.Publish(msgbus.TopicMessage[[]byte]{
 				Topic:   topic,
 				Message: []byte("test message"),
 			})
@@ -351,14 +351,14 @@ func TestTimeout(t *testing.T) {
 
 func TestMultipleTopics(t *testing.T) {
 	t.Run("Subscribe to multiple topics", func(t *testing.T) {
-		bus := msgbus.NewMessageBus()
+		bus := msgbus.NewMessageBus[[]byte]()
 		topic1 := msgbus.Topic("topic-1")
 		topic2 := msgbus.Topic("topic-2")
 		message1 := []byte("message 1")
 		message2 := []byte("message 2")
 
-		handler1 := make(msgbus.MessageHandler, 10)
-		handler2 := make(msgbus.MessageHandler, 10)
+		handler1 := make(msgbus.MessageHandler[[]byte], 10)
+		handler2 := make(msgbus.MessageHandler[[]byte], 10)
 
 		_, err1 := bus.Subscribe(topic1, handler1)
 		_, err2 := bus.Subscribe(topic2, handler2)
@@ -368,13 +368,13 @@ func TestMultipleTopics(t *testing.T) {
 		}
 
 		// Publish to topic 1
-		bus.Publish(msgbus.TopicMessage{
+		bus.Publish(msgbus.TopicMessage[[]byte]{
 			Topic:   topic1,
 			Message: message1,
 		})
 
 		// Publish to topic 2
-		bus.Publish(msgbus.TopicMessage{
+		bus.Publish(msgbus.TopicMessage[[]byte]{
 			Topic:   topic2,
 			Message: message2,
 		})
