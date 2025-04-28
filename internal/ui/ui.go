@@ -245,7 +245,6 @@ func parseTasksJson(jsonStr string) ([]task.Task, error) {
 }
 
 // Update handles messages and updates the model
-// Update handles messages and updates the model
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
