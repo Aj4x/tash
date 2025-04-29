@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"github.com/Aj4x/tash/internal/msgbus"
@@ -54,16 +53,17 @@ func TextWrap(s string, n int) []string {
 // Model represents the UI model for the application
 type Model struct {
 	MessageBus   msgbus.PublisherSubscriber[task.Message] `json:"-"`
-	Tasks        []task.Task                              `json:"-"`
+	busHandler   msgbus.MessageHandler[task.Message]
+	Tasks        []task.Task `json:"-"`
 	TasksLoading bool
-	Result       *string                  `json:"-"`
-	TaskChan     chan string              `json:"-"`
-	TaskJsonChan chan string              `json:"-"`
-	OutChan      chan string              `json:"-"`
-	ErrChan      chan string              `json:"-"`
-	CmdChan      chan task.TaskCommandMsg `json:"-"`
-	Viewport     viewport.Model           `json:"-"`
-	Table        table.Model              `json:"-"`
+	Result       *string `json:"-"`
+	//TaskChan     chan string              `json:"-"`
+	//TaskJsonChan chan string              `json:"-"`
+	//OutChan      chan string              `json:"-"`
+	//ErrChan      chan string              `json:"-"`
+	//CmdChan      chan task.TaskCommandMsg `json:"-"`
+	Viewport     viewport.Model `json:"-"`
+	Table        table.Model    `json:"-"`
 	Focused      Control
 	Width        int
 	Height       int
@@ -106,14 +106,15 @@ func NewModel(bus msgbus.PublisherSubscriber[task.Message]) Model {
 	})
 
 	return Model{
-		MessageBus:   bus,
-		Tasks:        []task.Task{},
-		Result:       new(string),
-		TaskChan:     make(chan string),
-		TaskJsonChan: make(chan string),
-		OutChan:      make(chan string),
-		ErrChan:      make(chan string),
-		CmdChan:      make(chan task.TaskCommandMsg),
+		MessageBus: bus,
+		busHandler: make(msgbus.MessageHandler[task.Message], 256),
+		Tasks:      []task.Task{},
+		Result:     new(string),
+		//TaskChan:     make(chan string),
+		//TaskJsonChan: make(chan string),
+		//OutChan:      make(chan string),
+		//ErrChan:      make(chan string),
+		//CmdChan:      make(chan task.TaskCommandMsg),
 		Viewport:     viewport.New(0, 0),
 		Table:        t,
 		Focused:      ControlTable,
@@ -230,6 +231,24 @@ func (m *Model) UpdateTaskTable() {
 
 // Init initializes the model
 func (m Model) Init() tea.Cmd {
+	sub := func(topic msgbus.Topic) {
+		_, err := m.MessageBus.Subscribe(task.TopicTaskDone, m.busHandler)
+		if err != nil {
+			panic(fmt.Errorf("failed to subscribe to '%s' topic: %w", topic, err))
+		}
+	}
+	topics := []msgbus.Topic{
+		task.TopicTaskOutput,
+		task.TopicTaskError,
+		task.TopicTaskJSON,
+		task.TopicTaskCommand,
+		task.TopicTaskDone,
+		task.TopicTaskListAllDone,
+		task.TopicTaskListAllErr,
+	}
+	for _, t := range topics {
+		sub(t)
+	}
 	return m.RefreshTaskList()
 }
 
@@ -246,50 +265,28 @@ func parseTasksJson(jsonStr string) ([]task.Task, error) {
 
 // Update handles messages and updates the model
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmds []tea.Cmd
+	//var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
+
 	case tea.WindowSizeMsg:
 		return m.handleWindowSizeMsg(msg)
+
 	case tea.KeyMsg:
 		return m.handleKeyMsg(msg)
-	case task.TaskCommandMsg:
-		return m.handleTaskCommandMsg(msg)
-	case task.TaskJsonMsg:
-		return m.handleTaskJsonMsg(msg)
-	case task.TaskOutputMsg:
-		m.AppendCommandOutput(string(msg))
-		cmds = append(cmds, WaitForMessage[task.TaskOutputMsg](m))
-	case task.TaskOutputErrMsg:
-		m.AppendErrorMsg(string(msg))
-		cmds = append(cmds, WaitForMessage[task.TaskOutputErrMsg](m))
-	case task.TaskErrMsg:
-		m.AppendErrorMsg(msg.Err.Error())
-		if m.ExecutingBatch {
-			m.AppendErrorMsg("Batch execution aborted")
-			m.ExecutingBatch = false
-			m.CurrentBatchTaskIndex = -1
-		}
-		cmds = append(cmds, WaitForMessage[task.TaskJsonMsg](m))
-	case task.ListAllErrMsg:
-		m.TasksLoading = false
-		m.AppendErrorMsg("Error: " + msg.Err.Error())
-	case task.TaskDoneMsg:
-		m.TasksLoading = false
-		m.AppendAppMsg("Task executed successfully!\n")
-		if m.ExecutingBatch {
-			return m.executeNextSelectedTask(m.CurrentBatchTaskIndex)
-		}
-	case task.ListAllDoneMsg:
-		m.TasksLoading = false
-		m.AppendAppMsg("Task list refreshed successfully!\n")
-		m.UpdateTaskTable()
+
+	// handle any bus messages
+	case task.Message:
+		return busListenerMiddleware(m.handleBusMessage(msg))
+
+	default:
+		return m, nil
 	}
 
-	var cmd tea.Cmd
-	m.Viewport, cmd = m.Viewport.Update(msg)
-	cmds = append(cmds, cmd)
-	return m, tea.Batch(cmds...)
+	//var cmd tea.Cmd
+	//m.Viewport, cmd = m.Viewport.Update(msg)
+	//cmds = append(cmds, cmd)
+	//return m, tea.Batch(cmds...)
 }
 
 // handleWindowSizeMsg handles window resize events
@@ -575,7 +572,7 @@ func (m Model) handleHelpKey() (tea.Model, tea.Cmd) {
 }
 
 // executeNextSelectedTask executes the task at the given index and then executes the next task
-func (m Model) executeNextSelectedTask(index int) (tea.Model, tea.Cmd) {
+func (m Model) executeNextSelectedTask(index int) (Model, tea.Cmd) {
 	if index >= len(m.SelectedTasks) {
 		// All tasks have been executed
 		m.AppendAppMsg("All selected tasks have been executed\n")
@@ -591,41 +588,12 @@ func (m Model) executeNextSelectedTask(index int) (tea.Model, tea.Cmd) {
 
 	// Create a command that will execute the current task and then execute the next task
 	return m, tea.Batch(
-		task.ExecuteTask(selectedTask.Id, m.OutChan, m.CmdChan, m.ErrChan),
-		WaitForMessage[task.TaskCommandMsg](m),
-		WaitForMessage[task.TaskOutputMsg](m),
-		WaitForMessage[task.TaskOutputErrMsg](m),
+		func() tea.Msg {
+			task.ExecuteTask(selectedTask.Id, m.MessageBus)
+			return nil
+		},
+		m.ListenForBusMessage(),
 	)
-}
-
-// handleTaskCommandMsg processes task command messages
-func (m Model) handleTaskCommandMsg(msg task.TaskCommandMsg) (tea.Model, tea.Cmd) {
-	m.TaskRunning = msg.TaskRunning
-	m.Command = msg.Command
-	return m, WaitForMessage[task.TaskCommandMsg](m)
-}
-
-// handleTaskJsonMsg processes task JSON messages
-func (m Model) handleTaskJsonMsg(msg task.TaskJsonMsg) (tea.Model, tea.Cmd) {
-	tasks, err := parseTasksJson(string(msg))
-	if err != nil {
-		m.AppendErrorMsg("Error parsing task list: " + err.Error())
-		return m, nil
-	}
-	var parsedJson bytes.Buffer
-	err = json.Indent(&parsedJson, []byte(msg), "", "\t")
-	if err != nil {
-		m.AppendErrorMsg("Error parsing json output for printing: " + err.Error())
-		m.AppendErrorMsg(string(msg))
-	} else {
-		m.AppendCommandOutput(string(parsedJson.Bytes()))
-	}
-	m.AppendAppMsg(fmt.Sprintf("Task list:\n%s\n", parsedJson.String()))
-	m.Tasks = tasks
-	m.AppendAppMsg(fmt.Sprintf("Tasks added: %d\n", len(m.Tasks)))
-	m.UpdateTaskTable()
-	m.TasksLoading = false
-	return m, tea.Batch(WaitForMessage[task.TaskOutputMsg](m), WaitForMessage[task.TaskOutputErrMsg](m))
 }
 
 // RefreshTaskList refreshes the task list
@@ -633,21 +601,45 @@ func (m *Model) RefreshTaskList() tea.Cmd {
 	m.Tasks = []task.Task{}
 	m.TasksLoading = true
 	m.AppendAppMsg("\nRefreshing task list\n")
-	return tea.Batch(task.ListAllJson(m.TaskJsonChan, m.ErrChan),
-		WaitForMessage[task.TaskJsonMsg](m),
-		WaitForMessage[task.TaskOutputMsg](m),
-		WaitForMessage[task.TaskOutputErrMsg](m))
+	return func() tea.Msg {
+		task.ListAllJson(m.MessageBus)
+		return nil
+	}
 }
 
-func (m Model) TaskChannel() chan string                 { return m.TaskChan }
-func (m Model) TaskJsonChannel() chan string             { return m.TaskJsonChan }
-func (m Model) OutputChannel() chan string               { return m.OutChan }
-func (m Model) ErrorChannel() chan string                { return m.ErrChan }
-func (m Model) CommandChannel() chan task.TaskCommandMsg { return m.CmdChan }
+//func (m Model) TaskChannel() chan string                 { return m.TaskChan }
+//func (m Model) TaskJsonChannel() chan string             { return m.TaskJsonChan }
+//func (m Model) OutputChannel() chan string               { return m.OutChan }
+//func (m Model) ErrorChannel() chan string                { return m.ErrChan }
+//func (m Model) CommandChannel() chan task.TaskCommandMsg { return m.CmdChan }
 
-func WaitForMessage[T task.MessageListener](mo task.MessageObserver) tea.Cmd {
-	var t T
-	return t.WaitForMessage(mo)
+//func WaitForMessage[T task.MessageListener](mo task.MessageObserver) tea.Cmd {
+//	var t T
+//	return t.WaitForMessage(mo)
+//}
+
+func (m Model) ListenForBusMessage() tea.Cmd {
+	var cmds []tea.Cmd
+	for msg := range m.busHandler {
+		cmd := func() tea.Msg {
+			return msg
+		}
+		cmds = append(cmds, cmd)
+	}
+	if len(cmds) == 0 {
+		return nil
+	}
+	return tea.Batch(cmds...)
+}
+
+func busListenerMiddleware(m Model, c tea.Cmd) (Model, tea.Cmd) {
+	var cmd tea.Cmd
+	if c == nil {
+		cmd = m.ListenForBusMessage()
+	} else {
+		cmd = tea.Batch(c, m.ListenForBusMessage())
+	}
+	return m, cmd
 }
 
 // AppendTask appends a task to the task list
@@ -697,9 +689,10 @@ func (m *Model) ExecuteSelectedTask() tea.Cmd {
 	m.TasksLoading = true
 
 	return tea.Batch(
-		task.ExecuteTask(selectedTask.Id, m.OutChan, m.CmdChan, m.ErrChan),
-		WaitForMessage[task.TaskCommandMsg](m),
-		WaitForMessage[task.TaskOutputMsg](m),
-		WaitForMessage[task.TaskOutputErrMsg](m),
+		func() tea.Msg {
+			task.ExecuteTask(selectedTask.Id, m.MessageBus)
+			return nil
+		},
+		m.ListenForBusMessage(),
 	)
 }
