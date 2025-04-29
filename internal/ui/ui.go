@@ -9,9 +9,9 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/mattn/go-runewidth"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // Control represents a UI control that can be focused
@@ -42,7 +42,7 @@ func TextWrap(s string, n int) []string {
 	}
 	var lines []string
 	remaining := s
-	for runewidth.StringWidth(remaining) >= n {
+	for len(remaining) >= n {
 		lines = append(lines, remaining[:n])
 		remaining = remaining[n:]
 	}
@@ -56,12 +56,7 @@ type Model struct {
 	busHandler   msgbus.MessageHandler[task.Message]
 	Tasks        []task.Task `json:"-"`
 	TasksLoading bool
-	Result       *string `json:"-"`
-	//TaskChan     chan string              `json:"-"`
-	//TaskJsonChan chan string              `json:"-"`
-	//OutChan      chan string              `json:"-"`
-	//ErrChan      chan string              `json:"-"`
-	//CmdChan      chan task.TaskCommandMsg `json:"-"`
+	Result       *string        `json:"-"`
 	Viewport     viewport.Model `json:"-"`
 	Table        table.Model    `json:"-"`
 	Focused      Control
@@ -106,15 +101,10 @@ func NewModel(bus msgbus.PublisherSubscriber[task.Message]) Model {
 	})
 
 	return Model{
-		MessageBus: bus,
-		busHandler: make(msgbus.MessageHandler[task.Message], 256),
-		Tasks:      []task.Task{},
-		Result:     new(string),
-		//TaskChan:     make(chan string),
-		//TaskJsonChan: make(chan string),
-		//OutChan:      make(chan string),
-		//ErrChan:      make(chan string),
-		//CmdChan:      make(chan task.TaskCommandMsg),
+		MessageBus:   bus,
+		busHandler:   make(msgbus.MessageHandler[task.Message], 4096),
+		Tasks:        []task.Task{},
+		Result:       new(string),
 		Viewport:     viewport.New(0, 0),
 		Table:        t,
 		Focused:      ControlTable,
@@ -232,7 +222,7 @@ func (m *Model) UpdateTaskTable() {
 // Init initializes the model
 func (m Model) Init() tea.Cmd {
 	sub := func(topic msgbus.Topic) {
-		_, err := m.MessageBus.Subscribe(task.TopicTaskDone, m.busHandler)
+		_, err := m.MessageBus.Subscribe(topic, m.busHandler)
 		if err != nil {
 			panic(fmt.Errorf("failed to subscribe to '%s' topic: %w", topic, err))
 		}
@@ -249,7 +239,10 @@ func (m Model) Init() tea.Cmd {
 	for _, t := range topics {
 		sub(t)
 	}
-	return m.RefreshTaskList()
+	return tea.Batch(
+		m.RefreshTaskList(),
+		m.pollMessages(),
+	)
 }
 
 func parseTasksJson(jsonStr string) ([]task.Task, error) {
@@ -265,8 +258,6 @@ func parseTasksJson(jsonStr string) ([]task.Task, error) {
 
 // Update handles messages and updates the model
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	//var cmds []tea.Cmd
-
 	switch msg := msg.(type) {
 
 	case tea.WindowSizeMsg:
@@ -275,18 +266,40 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return m.handleKeyMsg(msg)
 
+	case TickMessage:
+		return m, m.pollMessages()
+
 	// handle any bus messages
 	case task.Message:
-		return busListenerMiddleware(m.handleBusMessage(msg))
-
+		// Process the message and set up another listener
+		newModel, cmd := m.handleBusMessage(msg)
+		if cmd == nil {
+			return newModel, newModel.pollMessages()
+		}
+		return newModel, tea.Batch(cmd, newModel.pollMessages())
+	case msgbus.TopicMessage[task.Message]:
+		// Process the message and set up another listener
+		newModel, cmd := m.handleBusMessage(msg.Message)
+		if cmd == nil {
+			return newModel, newModel.pollMessages()
+		}
+		return newModel, tea.Batch(cmd, newModel.pollMessages())
 	default:
-		return m, nil
+		return m, m.pollMessages()
 	}
+}
 
-	//var cmd tea.Cmd
-	//m.Viewport, cmd = m.Viewport.Update(msg)
-	//cmds = append(cmds, cmd)
-	//return m, tea.Batch(cmds...)
+type TickMessage struct{}
+
+func (m Model) pollMessages() tea.Cmd {
+	return tea.Tick(time.Millisecond*50, func(t time.Time) tea.Msg {
+		select {
+		case msg := <-m.busHandler:
+			return msg.Message
+		default:
+			return TickMessage{}
+		}
+	})
 }
 
 // handleWindowSizeMsg handles window resize events
@@ -311,87 +324,6 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	default: // StateNormal
 		return m.handleNormalKey(msg)
 	}
-}
-
-// handleInfoKey shows task details when 'i' is pressed
-func (m Model) handleInfoKey() (tea.Model, tea.Cmd) {
-	if m.Focused == ControlTable && len(m.Tasks) > 0 && m.Table.SelectedRow() != nil {
-		selectedIndex := m.Table.Cursor()
-		m.SelectedTask = &m.Tasks[selectedIndex]
-		m.State = StateDetailsOverlay
-	}
-	return m, nil
-}
-
-// handleTabKey handles tab key to switch focus between controls
-func (m Model) handleTabKey() (tea.Model, tea.Cmd) {
-	m.Focused = m.Focused.Tab()
-	if m.Focused == ControlTable {
-		m.Table.Focus()
-	} else {
-		m.Table.Blur()
-	}
-	return m, nil
-}
-
-// handleNavigationKey handles navigation keys (up, down, j, k)
-func (m Model) handleNavigationKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	var cmds []tea.Cmd
-	var cmd tea.Cmd
-
-	switch m.Focused {
-	case ControlTable:
-		m.Table, cmd = m.Table.Update(msg)
-		cmds = append(cmds, cmd)
-	case ControlViewport:
-		m.Viewport, cmd = m.Viewport.Update(msg)
-		cmds = append(cmds, cmd)
-	default:
-		return m, nil
-	}
-
-	return m, tea.Batch(cmds...)
-}
-
-// handleExecuteKey executes the selected task when enter or 'e' is pressed
-func (m Model) handleExecuteKey() (tea.Model, tea.Cmd) {
-	if m.TasksLoading {
-		return m, nil
-	}
-
-	if m.Focused == ControlTable && len(m.Tasks) > 0 && m.Table.SelectedRow() != nil {
-		return m, m.ExecuteSelectedTask()
-	}
-
-	return m, nil
-}
-
-// handleCancelTask cancels a running task
-func (m Model) handleCancelTask() (tea.Model, tea.Cmd) {
-	if m.TaskRunning {
-		if err := task.StopTaskProcess(m.Command.Process); err != nil {
-			m.AppendErrorMsg("Error cancelling task: " + err.Error())
-			return m, nil
-		}
-		m.TaskRunning = false
-		m.Command = nil
-		m.AppendAppMsg("Task cancelled\n")
-	}
-	return m, nil
-}
-
-// handleOpenTaskPicker opens the task picker
-func (m Model) handleOpenTaskPicker() (tea.Model, tea.Cmd) {
-	if m.TasksLoading {
-		return m, nil
-	}
-
-	m.State = StateTaskPicker
-	m.TaskPickerInput = ""
-	m.TaskPickerMatches = m.Tasks // Initialize with all tasks
-	m.TaskPickerSelected = 0
-
-	return m, nil
 }
 
 // handleTaskPickerKey handles key presses when the task picker is open
@@ -509,68 +441,6 @@ func (m *Model) updateTaskPickerMatches() {
 	}
 }
 
-// handleExecuteSelectedTasks executes all selected tasks
-func (m Model) handleExecuteSelectedTasks() (tea.Model, tea.Cmd) {
-	if m.TasksLoading || len(m.SelectedTasks) == 0 || m.ExecutingBatch {
-		return m, nil
-	}
-
-	m.ExecutingBatch = true
-	m.CurrentBatchTaskIndex = 0
-
-	m.AppendAppMsg(fmt.Sprintf("Executing %d selected tasks\n", len(m.SelectedTasks)))
-
-	// Execute the first task
-	return m.executeNextSelectedTask(m.CurrentBatchTaskIndex)
-}
-
-// handleClearSelectedTasks clears the list of selected tasks
-func (m Model) handleClearSelectedTasks() (tea.Model, tea.Cmd) {
-	if len(m.SelectedTasks) > 0 {
-		m.SelectedTasks = []task.Task{}
-		m.AppendAppMsg("Selected tasks cleared\n")
-	}
-	return m, nil
-}
-
-// handleHelpKey toggles the help overlay
-func (m Model) handleHelpKey() (tea.Model, tea.Cmd) {
-	// Toggle between normal state and help overlay state
-	if m.State == StateHelpOverlay {
-		m.State = StateNormal
-	} else {
-		m.State = StateHelpOverlay
-	}
-
-	// If showing the overlay, initialize the viewport content and dimensions
-	if m.State == StateHelpOverlay {
-		// Calculate overlay dimensions
-		overlayWidth := int(float64(m.Width) * 0.7)
-		overlayHeight := int(float64(m.Height) * 0.7)
-		contentWidth := overlayWidth - 6    // 6 = 2*2 padding + 2 border
-		viewportHeight := overlayHeight - 6 // Account for padding and borders
-
-		// Set viewport dimensions
-		m.HelpViewport.Width = contentWidth
-		m.HelpViewport.Height = viewportHeight
-
-		// Generate and set content
-		content := m.KeyBindings.GenerateHelpContent(overlayWidth)
-		modelBytes, err := json.MarshalIndent(m, "", "\t")
-		content += "\n\n" + HelpTextSectionStyle.Render("Model")
-		if err != nil {
-			content += "\n" + HelpTextCommandStyle.Render(err.Error())
-		}
-		for _, text := range TextWrap(string(modelBytes), contentWidth) {
-			content += "\n" + HelpTextCommandStyle.Render(text)
-		}
-		m.HelpViewport.SetContent(content)
-		m.HelpViewport.GotoTop()
-	}
-
-	return m, nil
-}
-
 // executeNextSelectedTask executes the task at the given index and then executes the next task
 func (m Model) executeNextSelectedTask(index int) (Model, tea.Cmd) {
 	if index >= len(m.SelectedTasks) {
@@ -587,13 +457,10 @@ func (m Model) executeNextSelectedTask(index int) (Model, tea.Cmd) {
 	m.TasksLoading = true
 
 	// Create a command that will execute the current task and then execute the next task
-	return m, tea.Batch(
-		func() tea.Msg {
-			task.ExecuteTask(selectedTask.Id, m.MessageBus)
-			return nil
-		},
-		m.ListenForBusMessage(),
-	)
+	return m, func() tea.Msg {
+		task.ExecuteTask(selectedTask.Id, m.MessageBus)
+		return TickMessage{}
+	}
 }
 
 // RefreshTaskList refreshes the task list
@@ -603,52 +470,8 @@ func (m *Model) RefreshTaskList() tea.Cmd {
 	m.AppendAppMsg("\nRefreshing task list\n")
 	return func() tea.Msg {
 		task.ListAllJson(m.MessageBus)
-		return nil
+		return TickMessage{}
 	}
-}
-
-//func (m Model) TaskChannel() chan string                 { return m.TaskChan }
-//func (m Model) TaskJsonChannel() chan string             { return m.TaskJsonChan }
-//func (m Model) OutputChannel() chan string               { return m.OutChan }
-//func (m Model) ErrorChannel() chan string                { return m.ErrChan }
-//func (m Model) CommandChannel() chan task.TaskCommandMsg { return m.CmdChan }
-
-//func WaitForMessage[T task.MessageListener](mo task.MessageObserver) tea.Cmd {
-//	var t T
-//	return t.WaitForMessage(mo)
-//}
-
-func (m Model) ListenForBusMessage() tea.Cmd {
-	var cmds []tea.Cmd
-	for msg := range m.busHandler {
-		cmd := func() tea.Msg {
-			return msg
-		}
-		cmds = append(cmds, cmd)
-	}
-	if len(cmds) == 0 {
-		return nil
-	}
-	return tea.Batch(cmds...)
-}
-
-func busListenerMiddleware(m Model, c tea.Cmd) (Model, tea.Cmd) {
-	var cmd tea.Cmd
-	if c == nil {
-		cmd = m.ListenForBusMessage()
-	} else {
-		cmd = tea.Batch(c, m.ListenForBusMessage())
-	}
-	return m, cmd
-}
-
-// AppendTask appends a task to the task list
-func (m *Model) AppendTask(taskMsg string) {
-	t, ok := task.ParseTaskLine(taskMsg)
-	if !ok {
-		return
-	}
-	m.Tasks = append(m.Tasks, t)
 }
 
 // HandleWindowResize handles window resize events
@@ -688,11 +511,8 @@ func (m *Model) ExecuteSelectedTask() tea.Cmd {
 	m.AppendAppMsg(fmt.Sprintf("Executing task: %s\n\n", selectedTask.Id))
 	m.TasksLoading = true
 
-	return tea.Batch(
-		func() tea.Msg {
-			task.ExecuteTask(selectedTask.Id, m.MessageBus)
-			return nil
-		},
-		m.ListenForBusMessage(),
-	)
+	return func() tea.Msg {
+		task.ExecuteTask(selectedTask.Id, m.MessageBus)
+		return TickMessage{}
+	}
 }

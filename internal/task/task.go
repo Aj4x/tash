@@ -21,6 +21,10 @@ type Task struct {
 
 type Type string
 
+func (t Type) topic() msgbus.Topic {
+	return msgbus.Topic(t)
+}
+
 const (
 	TypeTaskOutput      = Type("task.output")
 	TypeTaskOutputErr   = Type("task.outputerr")
@@ -112,6 +116,14 @@ func NewErrorMessage(ctx context.Context, err error) Message {
 	}
 }
 
+func NewTaskJsonMessage(ctx context.Context, output string) Message {
+	ctx = context.WithValue(ctx, CtxKeyOutput, output)
+	return Message{
+		Type: TypeTaskJSON,
+		ctx:  ctx,
+	}
+}
+
 const (
 	TopicTaskOutput      = msgbus.Topic("task.output")
 	TopicTaskOutputErr   = msgbus.Topic("task.outputerr")
@@ -122,59 +134,6 @@ const (
 	TopicTaskListAllDone = msgbus.Topic("list.done")
 	TopicTaskListAllErr  = msgbus.Topic("list.error")
 )
-
-// Message types for Bubble Tea
-//type ListAllErrMsg struct{ Err error }
-//type ListAllDoneMsg struct{}
-
-//type TaskJsonMsg string
-
-//func (t TaskJsonMsg) WaitForMessage(mo MessageObserver) tea.Cmd {
-//	return func() tea.Msg {
-//		return TaskJsonMsg(<-mo.TaskJsonChannel())
-//	}
-//}
-
-// type TaskErrMsg struct{ Err error }
-type TaskOutputMsg string
-
-//func (t TaskOutputMsg) WaitForMessage(mo MessageObserver) tea.Cmd {
-//	return func() tea.Msg {
-//		return TaskOutputMsg(<-mo.OutputChannel())
-//	}
-//}
-
-type TaskOutputErrMsg string
-
-//func (t TaskOutputErrMsg) WaitForMessage(mo MessageObserver) tea.Cmd {
-//	return func() tea.Msg {
-//		return TaskOutputErrMsg(<-mo.ErrorChannel())
-//	}
-//}
-
-//type TaskDoneMsg struct{}
-
-type TaskCommandMsg struct {
-	Command     *exec.Cmd
-	TaskRunning bool
-}
-
-//func (t TaskCommandMsg) WaitForMessage(mo MessageObserver) tea.Cmd {
-//	return func() tea.Msg {
-//		return <-mo.CommandChannel()
-//	}
-//}
-
-//type MessageListener interface {
-//	WaitForMessage(mo MessageObserver) tea.Cmd
-//}
-
-//type MessageObserver interface {
-//	TaskJsonChannel() chan string
-//	OutputChannel() chan string
-//	ErrorChannel() chan string
-//	CommandChannel() chan TaskCommandMsg
-//}
 
 // ListAllJson executes the "task --list-all --json" command and sends the resulting JSON to the message bus.
 func ListAllJson(bus msgbus.Publisher[Message]) {
@@ -190,10 +149,10 @@ func ListAllJson(bus msgbus.Publisher[Message]) {
 			Message: NewOutputErrMessage(context.Background(), output),
 		})
 	}
-	publishListOutput := func(output string) {
+	publishTaskJson := func(output string) {
 		bus.Publish(msgbus.TopicMessage[Message]{
-			Topic:   TopicTaskOutput,
-			Message: NewOutputMessage(context.Background(), output),
+			Topic:   TopicTaskJSON,
+			Message: NewTaskJsonMessage(context.Background(), output),
 		})
 	}
 	cmd := exec.Command("task", "--list-all", "--json")
@@ -252,7 +211,7 @@ func ListAllJson(bus msgbus.Publisher[Message]) {
 	}()
 	wg.Wait()
 	if len(taskOut) > 0 {
-		publishListOutput(taskOut)
+		publishTaskJson(taskOut)
 	}
 }
 
@@ -359,6 +318,7 @@ func ExecuteTask(taskId string, bus msgbus.Publisher[Message]) {
 	}
 
 	bus.Publish(msgbus.TopicMessage[Message]{
-		Topic: TopicTaskDone,
+		Topic:   TopicTaskDone,
+		Message: Message{Type: TypeTaskDone},
 	})
 }

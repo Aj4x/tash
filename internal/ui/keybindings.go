@@ -209,6 +209,9 @@ func (kb KeyBindings) GenerateHelpContent(overlayWidth int) string {
 
 		// Join columns
 		content += lipgloss.JoinHorizontal(lipgloss.Top, col1, "  ", col2) + "\n\n"
+
+		// output model for debugging
+
 	}
 
 	return content

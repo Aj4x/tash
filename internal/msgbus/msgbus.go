@@ -102,7 +102,6 @@ func (m *messageBus[T]) Publish(msg TopicMessage[T]) {
 			return
 		default:
 			s.publish(msg)
-			fmt.Printf("published msg to %s\n", s.Topic)
 		}
 		cancel()
 	}
