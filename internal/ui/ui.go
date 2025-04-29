@@ -228,13 +228,13 @@ func (m Model) Init() tea.Cmd {
 		}
 	}
 	topics := []msgbus.Topic{
-		task.TopicTaskOutput,
-		task.TopicTaskError,
-		task.TopicTaskJSON,
-		task.TopicTaskCommand,
-		task.TopicTaskDone,
-		task.TopicTaskListAllDone,
-		task.TopicTaskListAllErr,
+		task.TypeTaskOutput.Topic(),
+		task.TypeTaskError.Topic(),
+		task.TypeTaskJSON.Topic(),
+		task.TypeTaskCommand.Topic(),
+		task.TypeTaskDone.Topic(),
+		task.TypeTaskListAllDone.Topic(),
+		task.TypeTaskListAllErr.Topic(),
 	}
 	for _, t := range topics {
 		sub(t)

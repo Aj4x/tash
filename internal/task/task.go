@@ -21,8 +21,15 @@ type Task struct {
 
 type Type string
 
-func (t Type) topic() msgbus.Topic {
+func (t Type) Topic() msgbus.Topic {
 	return msgbus.Topic(t)
+}
+
+func (t Type) Message() Message {
+	return Message{
+		Type: t,
+		ctx:  context.Background(),
+	}
 }
 
 const (
@@ -42,6 +49,13 @@ type Message struct {
 	ctxCancel context.CancelFunc
 }
 
+func (m Message) TopicMessage() msgbus.TopicMessage[Message] {
+	return msgbus.TopicMessage[Message]{
+		Topic:   m.Type.Topic(),
+		Message: m,
+	}
+}
+
 type ContextKey string
 
 const (
@@ -51,123 +65,75 @@ const (
 	CtxKeyTaskRunning = ContextKey("taskRunning")
 )
 
-func (m *Message) Error() error {
+func (m Message) Error() error {
 	return m.ctx.Value(CtxKeyError).(error)
 }
 
-func (m *Message) Output() string {
+func (m Message) SetError(err error) Message {
+	m.ctx = context.WithValue(m.ctx, CtxKeyError, err)
+	return m
+}
+
+func (m Message) Output() string {
 	return m.ctx.Value(CtxKeyOutput).(string)
 }
 
-func (m *Message) Command() *exec.Cmd {
+func (m Message) SetOutput(output string) Message {
+	m.ctx = context.WithValue(m.ctx, CtxKeyOutput, output)
+	return m
+}
+
+func (m Message) Command() *exec.Cmd {
 	return m.ctx.Value(CtxKeyCommand).(*exec.Cmd)
 }
 
-func (m *Message) TaskRunning() bool {
-	return m.ctx.Value(CtxKeyTaskRunning).(bool)
+func (m Message) SetCommand(cmd *exec.Cmd) Message {
+	m.ctx = context.WithValue(m.ctx, CtxKeyCommand, cmd)
+	return m
 }
 
-func (m *Message) Wait() {
+func (m Message) TaskRunning() bool {
+	val := m.ctx.Value(CtxKeyTaskRunning)
+	if val == nil {
+		return false
+	}
+	return val.(bool)
+}
+
+func (m Message) SetTaskRunning(isRunning bool) Message {
+	m.ctx = context.WithValue(m.ctx, CtxKeyTaskRunning, isRunning)
+	return m
+}
+
+func (m Message) Wait() {
 	if m.Type != TypeTaskCommand {
 		return
 	}
 	<-m.ctx.Done()
 }
 
-func (m *Message) Cancel() {
+func (m Message) Cancel() {
 	if m.Type != TypeTaskCommand {
 		return
 	}
 	m.ctxCancel()
 }
 
-func NewCommandMessage(ctx context.Context, cmd *exec.Cmd) Message {
-	ctx, cancel := context.WithCancel(ctx)
-	ctx = context.WithValue(ctx, CtxKeyCommand, cmd)
-	ctx = context.WithValue(ctx, CtxKeyTaskRunning, cmd != nil)
-	return Message{
-		Type:      TypeTaskCommand,
-		ctx:       ctx,
-		ctxCancel: cancel,
-	}
-}
-
-func NewOutputMessage(ctx context.Context, output string) Message {
-	ctx = context.WithValue(ctx, CtxKeyOutput, output)
-	return Message{
-		Type: TypeTaskOutput,
-		ctx:  ctx,
-	}
-}
-
-func NewOutputErrMessage(ctx context.Context, output string) Message {
-	ctx = context.WithValue(ctx, CtxKeyOutput, output)
-	return Message{
-		Type: TypeTaskOutputErr,
-		ctx:  ctx,
-	}
-}
-
-func NewErrorMessage(ctx context.Context, err error) Message {
-	ctx = context.WithValue(ctx, CtxKeyError, err)
-	return Message{
-		Type: TypeTaskError,
-		ctx:  ctx,
-	}
-}
-
-func NewTaskJsonMessage(ctx context.Context, output string) Message {
-	ctx = context.WithValue(ctx, CtxKeyOutput, output)
-	return Message{
-		Type: TypeTaskJSON,
-		ctx:  ctx,
-	}
-}
-
-const (
-	TopicTaskOutput      = msgbus.Topic("task.output")
-	TopicTaskOutputErr   = msgbus.Topic("task.outputerr")
-	TopicTaskError       = msgbus.Topic("task.error")
-	TopicTaskJSON        = msgbus.Topic("task.json")
-	TopicTaskCommand     = msgbus.Topic("task.command")
-	TopicTaskDone        = msgbus.Topic("task.done")
-	TopicTaskListAllDone = msgbus.Topic("list.done")
-	TopicTaskListAllErr  = msgbus.Topic("list.error")
-)
-
 // ListAllJson executes the "task --list-all --json" command and sends the resulting JSON to the message bus.
 func ListAllJson(bus msgbus.Publisher[Message]) {
-	publishListErr := func(err error) {
-		bus.Publish(msgbus.TopicMessage[Message]{
-			Topic:   TopicTaskListAllErr,
-			Message: NewErrorMessage(context.Background(), err),
-		})
-	}
-	publishListOutputErr := func(output string) {
-		bus.Publish(msgbus.TopicMessage[Message]{
-			Topic:   TopicTaskOutputErr,
-			Message: NewOutputErrMessage(context.Background(), output),
-		})
-	}
-	publishTaskJson := func(output string) {
-		bus.Publish(msgbus.TopicMessage[Message]{
-			Topic:   TopicTaskJSON,
-			Message: NewTaskJsonMessage(context.Background(), output),
-		})
-	}
 	cmd := exec.Command("task", "--list-all", "--json")
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		publishListErr(err)
+		bus.Publish(TypeTaskListAllErr.Message().SetError(err).TopicMessage())
 		return
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		publishListErr(err)
+		bus.Publish(TypeTaskListAllErr.Message().SetError(err).TopicMessage())
 		return
 	}
 	if err := cmd.Start(); err != nil {
-		publishListErr(err)
+		bus.Publish(TypeTaskListAllErr.Message().SetError(err).TopicMessage())
 		return
 	}
 	var taskOut string
@@ -194,7 +160,7 @@ func ListAllJson(bus msgbus.Publisher[Message]) {
 				wg.Add(1)
 				started = true
 			}
-			publishListOutputErr(stdErrScanner.Text())
+			bus.Publish(TypeTaskOutputErr.Message().SetOutput(stdErrScanner.Text()).TopicMessage())
 		}
 		if started {
 			wg.Done()
@@ -204,14 +170,18 @@ func ListAllJson(bus msgbus.Publisher[Message]) {
 	go func() {
 		err := cmd.Wait()
 		if err != nil {
-			publishListOutputErr(fmt.Sprintf("error getting task list: %s", err))
+			bus.Publish(TypeTaskOutputErr.
+				Message().
+				SetOutput(fmt.Sprintf("error getting task list: %s", err)).
+				TopicMessage(),
+			)
 			wg.Done()
 		}
 		wg.Done()
 	}()
 	wg.Wait()
 	if len(taskOut) > 0 {
-		publishTaskJson(taskOut)
+		bus.Publish(TypeTaskJSON.Message().SetOutput(taskOut).TopicMessage())
 	}
 }
 
@@ -241,84 +211,56 @@ func ParseTaskLine(taskMsg string) (Task, bool) {
 
 // ExecuteTask runs a task
 func ExecuteTask(taskId string, bus msgbus.Publisher[Message]) {
-	publishCommandStopped := func() {
-		bus.Publish(msgbus.TopicMessage[Message]{
-			Topic:   TopicTaskCommand,
-			Message: NewCommandMessage(context.Background(), nil),
-		})
-	}
-	publishTaskErr := func(err error) {
-		bus.Publish(msgbus.TopicMessage[Message]{
-			Topic:   TopicTaskError,
-			Message: NewErrorMessage(context.Background(), err),
-		})
-	}
-	publishTaskOutput := func(output string) {
-		bus.Publish(msgbus.TopicMessage[Message]{
-			Topic:   TopicTaskOutput,
-			Message: NewOutputMessage(context.Background(), output),
-		})
-	}
-	publishTaskOutputErr := func(output string) {
-		bus.Publish(msgbus.TopicMessage[Message]{
-			Topic:   TopicTaskOutputErr,
-			Message: NewOutputErrMessage(context.Background(), output),
-		})
-	}
 	command := exec.Command("task", taskId)
 	command.SysProcAttr = TaskProcessAttr()
-	bus.Publish(msgbus.TopicMessage[Message]{
-		Topic:   TopicTaskCommand,
-		Message: NewCommandMessage(context.Background(), command),
-	})
+	bus.Publish(TypeTaskCommand.Message().SetCommand(command).SetTaskRunning(true).TopicMessage())
 	stdout, err := command.StdoutPipe()
 	if err != nil {
-		publishCommandStopped()
-		publishTaskErr(err)
+		bus.Publish(TypeTaskCommand.Message().SetCommand(nil).SetTaskRunning(false).TopicMessage())
+		bus.Publish(TypeTaskError.Message().SetError(err).TopicMessage())
 		return
 	}
 	stderr, err := command.StderrPipe()
 	if err != nil {
-		publishCommandStopped()
-		publishTaskErr(err)
+		bus.Publish(TypeTaskCommand.Message().SetCommand(nil).SetTaskRunning(false).TopicMessage())
+		bus.Publish(TypeTaskError.Message().SetError(err).TopicMessage())
 		return
 	}
 	if err := command.Start(); err != nil {
-		publishCommandStopped()
-		publishTaskErr(err)
+		bus.Publish(TypeTaskCommand.Message().SetCommand(nil).SetTaskRunning(false).TopicMessage())
+		bus.Publish(TypeTaskError.Message().SetError(err).TopicMessage())
 		return
 	}
 
 	go func() {
 		scanner := bufio.NewScanner(stdout)
 		for scanner.Scan() {
-			publishTaskOutput(scanner.Text())
+			bus.Publish(TypeTaskOutput.Message().SetOutput(scanner.Text()).TopicMessage())
 		}
 	}()
 
 	go func() {
 		scanner := bufio.NewScanner(stderr)
 		for scanner.Scan() {
-			publishTaskOutputErr(scanner.Text())
+			bus.Publish(TypeTaskOutputErr.Message().SetOutput(scanner.Text()).TopicMessage())
 		}
 	}()
 
 	err = command.Wait()
 
-	publishCommandStopped()
+	bus.Publish(TypeTaskCommand.Message().SetCommand(nil).SetTaskRunning(false).TopicMessage())
 
 	if err != nil {
 		var exitError *exec.ExitError
 		if errors.As(err, &exitError) {
-			publishTaskErr(fmt.Errorf("task failed with exit code %d: %w", exitError.ExitCode(), err))
+			err = fmt.Errorf("task failed with exit code %d: %w", exitError.ExitCode(), err)
+			bus.Publish(TypeTaskError.Message().SetError(err).TopicMessage())
 			return
 		}
-		publishTaskErr(fmt.Errorf("task failed: %w", err))
+		err = fmt.Errorf("task failed: %w", err)
+		bus.Publish(TypeTaskError.Message().SetError(err).TopicMessage())
 		return
 	}
 
-	bus.Publish(msgbus.TopicMessage[Message]{
-		Topic:   TopicTaskDone,
-		Message: Message{Type: TypeTaskDone},
-	})
+	bus.Publish(TypeTaskDone.Message().TopicMessage())
 }
