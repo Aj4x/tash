@@ -55,6 +55,7 @@ func (m Model) handleTaskErrorMsg(msg task.Message) (Model, tea.Cmd) {
 func (m Model) handleTaskCommandMsg(msg task.Message) (Model, tea.Cmd) {
 	m.TaskRunning = msg.TaskRunning()
 	m.Command = msg.Command()
+	m.CommandCancel = msg.CancelFunc()
 	return m, nil
 }
 

@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"github.com/Aj4x/tash/internal/msgbus"
@@ -52,23 +53,24 @@ func TextWrap(s string, n int) []string {
 
 // Model represents the UI model for the application
 type Model struct {
-	MessageBus   msgbus.PublisherSubscriber[task.Message] `json:"-"`
-	busHandler   msgbus.MessageHandler[task.Message]
-	Tasks        []task.Task `json:"-"`
-	TasksLoading bool
-	Result       *string        `json:"-"`
-	Viewport     viewport.Model `json:"-"`
-	Table        table.Model    `json:"-"`
-	Focused      Control
-	Width        int
-	Height       int
-	Initialised  bool
-	SelectedTask *task.Task
-	State        UIState        // Current UI state (normal, task picker, details overlay, help overlay)
-	HelpViewport viewport.Model `json:"-"` // Viewport for scrollable help content
-	Command      *exec.Cmd      `json:"-"`
-	TaskRunning  bool
-	KeyBindings  KeyBindings `json:"-"` // Key bindings for the application
+	MessageBus    msgbus.PublisherSubscriber[task.Message] `json:"-"`
+	busHandler    msgbus.MessageHandler[task.Message]
+	Tasks         []task.Task `json:"-"`
+	TasksLoading  bool
+	Result        *string        `json:"-"`
+	Viewport      viewport.Model `json:"-"`
+	Table         table.Model    `json:"-"`
+	Focused       Control
+	Width         int
+	Height        int
+	Initialised   bool
+	SelectedTask  *task.Task
+	State         UIState        // Current UI state (normal, task picker, details overlay, help overlay)
+	HelpViewport  viewport.Model `json:"-"` // Viewport for scrollable help content
+	Command       *exec.Cmd      `json:"-"`
+	CommandCancel context.CancelFunc
+	TaskRunning   bool
+	KeyBindings   KeyBindings `json:"-"` // Key bindings for the application
 
 	// Task picker fields
 	TaskPickerInput    string

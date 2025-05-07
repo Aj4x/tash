@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
 )
 
 // Task represents a task from the Taskfile
@@ -112,11 +113,11 @@ func (m Message) Wait() {
 	<-m.ctx.Done()
 }
 
-func (m Message) Cancel() {
+func (m Message) CancelFunc() context.CancelFunc {
 	if m.Type != TypeTaskCommand {
-		return
+		return nil
 	}
-	m.ctxCancel()
+	return m.ctxCancel
 }
 
 // ListAllJson executes the "task --list-all --json" command and sends the resulting JSON to the message bus.
@@ -211,9 +212,26 @@ func ParseTaskLine(taskMsg string) (Task, bool) {
 
 // ExecuteTask runs a task
 func ExecuteTask(taskId string, bus msgbus.Publisher[Message]) {
-	command := exec.Command("task", taskId)
+	msg := TypeTaskCommand.Message()
+	ctx, cancel := context.WithCancel(msg.ctx)
+	msg.ctx, msg.ctxCancel = ctx, cancel
+	command := exec.CommandContext(msg.ctx, "task", taskId)
 	command.SysProcAttr = TaskProcessAttr()
-	bus.Publish(TypeTaskCommand.Message().SetCommand(command).SetTaskRunning(true).TopicMessage())
+	bus.Publish(msg.SetCommand(command).SetTaskRunning(true).TopicMessage())
+	// Add this near the beginning of the ExecuteTask function
+	go func() {
+		<-ctx.Done()
+		// If context is canceled, ensure we clean up properly
+		if ctx.Err() == context.Canceled {
+			// Context was explicitly canceled, not timed out
+			bus.Publish(TypeTaskOutputErr.Message().SetOutput("Task cancellation requested").TopicMessage())
+			if err := syscall.Kill(-command.Process.Pid, syscall.SIGINT); err != nil {
+				bus.Publish(TypeTaskOutputErr.Message().SetOutput(fmt.Sprintf("Error cancelling task task: %s", err)).TopicMessage())
+			} else {
+				bus.Publish(TypeTaskOutput.Message().SetOutput("Task cancelled").TopicMessage())
+			}
+		}
+	}()
 	stdout, err := command.StdoutPipe()
 	if err != nil {
 		bus.Publish(TypeTaskCommand.Message().SetCommand(nil).SetTaskRunning(false).TopicMessage())
