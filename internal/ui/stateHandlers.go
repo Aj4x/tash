@@ -55,7 +55,7 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// Navigation
-	if IsKeyMatch(msg, "↑/↓/j/k") {
+	if IsKeyMatch(msg, "↑/↓/j/k") || IsKeyMatch(msg, "pgup/pgdn") {
 		var cmds []tea.Cmd
 		var cmd tea.Cmd
 
@@ -89,13 +89,18 @@ func (m Model) handleNormalKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Cancel task
 	if IsKeyMatch(msg, "ctrl+x") {
 		if m.TaskRunning {
-			if err := task.StopTaskProcess(m.Command.Process); err != nil {
-				m.AppendErrorMsg("Error cancelling task: " + err.Error())
-				return m, nil
-			}
+			m.CommandCancel()
 			m.TaskRunning = false
 			m.Command = nil
-			m.AppendAppMsg("Task cancelled\n")
+			m.CommandCancel = nil
+			if m.ExecutingBatch {
+				m.ExecutingBatch = false
+				m.CurrentBatchTaskIndex = -1
+			}
+			if m.TasksLoading {
+				m.TasksLoading = false
+			}
+			m.AppendAppMsg("Task cancellation requested\n")
 		}
 		return m, nil
 	}
@@ -182,14 +187,14 @@ func (m Model) handleHelpOverlayKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Handle navigation within help overlay
 	if IsKeyMatch(msg, "up") || IsKeyMatch(msg, "k") {
-		m.HelpViewport.LineUp(1)
+		m.HelpViewport.ScrollUp(1)
 	} else if IsKeyMatch(msg, "down") || IsKeyMatch(msg, "j") {
-		m.HelpViewport.LineDown(1)
+		m.HelpViewport.ScrollDown(1)
 	} else if IsKeyMatch(msg, "pgup/pgdn") {
 		if msg.String() == "pgup" {
-			m.HelpViewport.HalfViewUp()
+			m.HelpViewport.HalfPageUp()
 		} else {
-			m.HelpViewport.HalfViewDown()
+			m.HelpViewport.HalfPageDown()
 		}
 	} else if IsKeyMatch(msg, "home/end") {
 		if msg.String() == "home" {

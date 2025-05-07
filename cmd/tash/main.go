@@ -3,6 +3,8 @@ package main
 import (
 	"flag"
 	"fmt"
+	"github.com/Aj4x/tash/internal/msgbus"
+	"github.com/Aj4x/tash/internal/task"
 	"github.com/Aj4x/tash/internal/ui"
 	tea "github.com/charmbracelet/bubbletea"
 	"os"
@@ -24,7 +26,9 @@ func main() {
 		os.Exit(0)
 	}
 
-	p := tea.NewProgram(ui.NewModel(), tea.WithAltScreen())
+	messageBus := msgbus.NewMessageBus[task.Message]()
+
+	p := tea.NewProgram(ui.NewModel(messageBus), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Println("tash error: " + err.Error())
 		os.Exit(1)

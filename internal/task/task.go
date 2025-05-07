@@ -2,12 +2,14 @@ package task
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
-	tea "github.com/charmbracelet/bubbletea"
+	"github.com/Aj4x/tash/internal/msgbus"
 	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
 )
 
 // Task represents a task from the Taskfile
@@ -18,121 +20,169 @@ type Task struct {
 	Aliases []string `json:"aliases,omitempty"`
 }
 
-// Message types for Bubble Tea
-type ListAllErrMsg struct{ Err error }
-type ListAllDoneMsg struct{}
+type Type string
 
-type TaskJsonMsg string
+func (t Type) Topic() msgbus.Topic {
+	return msgbus.Topic(t)
+}
 
-func (t TaskJsonMsg) WaitForMessage(mo MessageObserver) tea.Cmd {
-	return func() tea.Msg {
-		return TaskJsonMsg(<-mo.TaskJsonChannel())
+func (t Type) Message() Message {
+	return Message{
+		Type: t,
+		ctx:  context.Background(),
 	}
 }
 
-type TaskErrMsg struct{ Err error }
-type TaskOutputMsg string
+const (
+	TypeTaskOutput      = Type("task.output")
+	TypeTaskOutputErr   = Type("task.outputerr")
+	TypeTaskError       = Type("task.error")
+	TypeTaskJSON        = Type("task.json")
+	TypeTaskCommand     = Type("task.command")
+	TypeTaskDone        = Type("task.done")
+	TypeTaskListAllDone = Type("list.done")
+	TypeTaskListAllErr  = Type("list.error")
+)
 
-func (t TaskOutputMsg) WaitForMessage(mo MessageObserver) tea.Cmd {
-	return func() tea.Msg {
-		return TaskOutputMsg(<-mo.OutputChannel())
+type Message struct {
+	Type      Type
+	ctx       context.Context
+	ctxCancel context.CancelFunc
+}
+
+func (m Message) TopicMessage() msgbus.TopicMessage[Message] {
+	return msgbus.TopicMessage[Message]{
+		Topic:   m.Type.Topic(),
+		Message: m,
 	}
 }
 
-type TaskOutputErrMsg string
+type ContextKey string
 
-func (t TaskOutputErrMsg) WaitForMessage(mo MessageObserver) tea.Cmd {
-	return func() tea.Msg {
-		return TaskOutputErrMsg(<-mo.ErrorChannel())
+const (
+	CtxKeyError       = ContextKey("error")
+	CtxKeyOutput      = ContextKey("output")
+	CtxKeyCommand     = ContextKey("command")
+	CtxKeyTaskRunning = ContextKey("taskRunning")
+)
+
+func (m Message) Error() error {
+	return m.ctx.Value(CtxKeyError).(error)
+}
+
+func (m Message) SetError(err error) Message {
+	m.ctx = context.WithValue(m.ctx, CtxKeyError, err)
+	return m
+}
+
+func (m Message) Output() string {
+	return m.ctx.Value(CtxKeyOutput).(string)
+}
+
+func (m Message) SetOutput(output string) Message {
+	m.ctx = context.WithValue(m.ctx, CtxKeyOutput, output)
+	return m
+}
+
+func (m Message) Command() *exec.Cmd {
+	return m.ctx.Value(CtxKeyCommand).(*exec.Cmd)
+}
+
+func (m Message) SetCommand(cmd *exec.Cmd) Message {
+	m.ctx = context.WithValue(m.ctx, CtxKeyCommand, cmd)
+	return m
+}
+
+func (m Message) TaskRunning() bool {
+	val := m.ctx.Value(CtxKeyTaskRunning)
+	if val == nil {
+		return false
 	}
+	return val.(bool)
 }
 
-type TaskDoneMsg struct{}
-type TaskCommandMsg struct {
-	Command     *exec.Cmd
-	TaskRunning bool
+func (m Message) SetTaskRunning(isRunning bool) Message {
+	m.ctx = context.WithValue(m.ctx, CtxKeyTaskRunning, isRunning)
+	return m
 }
 
-func (t TaskCommandMsg) WaitForMessage(mo MessageObserver) tea.Cmd {
-	return func() tea.Msg {
-		return <-mo.CommandChannel()
+func (m Message) Wait() {
+	if m.Type != TypeTaskCommand {
+		return
 	}
+	<-m.ctx.Done()
 }
 
-type MessageListener interface {
-	WaitForMessage(mo MessageObserver) tea.Cmd
+func (m Message) CancelFunc() context.CancelFunc {
+	if m.Type != TypeTaskCommand {
+		return nil
+	}
+	return m.ctxCancel
 }
 
-type MessageObserver interface {
-	TaskJsonChannel() chan string
-	OutputChannel() chan string
-	ErrorChannel() chan string
-	CommandChannel() chan TaskCommandMsg
-}
-
-// ListAllJson executes the "task --list-all --json" command and sends the resulting JSON output to a target channel.
-// Returns various `tea.Msg` types based on command execution success or failure.
-func ListAllJson(target, errChan chan string) tea.Cmd {
-	return func() tea.Msg {
-		cmd := exec.Command("task", "--list-all", "--json")
-		stdout, err := cmd.StdoutPipe()
-		if err != nil {
-			return ListAllErrMsg{Err: err}
+// ListAllJson executes the "task --list-all --json" command and sends the resulting JSON to the message bus.
+func ListAllJson(bus msgbus.Publisher[Message]) {
+	cmd := exec.Command("task", "--list-all", "--json")
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		bus.Publish(TypeTaskListAllErr.Message().SetError(err).TopicMessage())
+		return
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		bus.Publish(TypeTaskListAllErr.Message().SetError(err).TopicMessage())
+		return
+	}
+	if err := cmd.Start(); err != nil {
+		bus.Publish(TypeTaskListAllErr.Message().SetError(err).TopicMessage())
+		return
+	}
+	var taskOut string
+	stdoutScanner := bufio.NewScanner(stdout)
+	stdErrScanner := bufio.NewScanner(stderr)
+	wg := sync.WaitGroup{}
+	go func() {
+		started := false
+		for stdoutScanner.Scan() {
+			if !started {
+				wg.Add(1)
+				started = true
+			}
+			taskOut += stdoutScanner.Text()
 		}
-		stderr, err := cmd.StderrPipe()
-		if err != nil {
-			return ListAllErrMsg{Err: err}
-		}
-		if err := cmd.Start(); err != nil {
-			return ListAllErrMsg{Err: err}
-		}
-		var taskOut, errOut string
-		stdoutScanner := bufio.NewScanner(stdout)
-		stdErrScanner := bufio.NewScanner(stderr)
-		wg := sync.WaitGroup{}
-		go func() {
-			started := false
-			for stdoutScanner.Scan() {
-				if !started {
-					wg.Add(1)
-					started = true
-				}
-				taskOut += stdoutScanner.Text()
-			}
-			if started {
-				wg.Done()
-			}
-		}()
-		go func() {
-			started := false
-			for stdErrScanner.Scan() {
-				if !started {
-					wg.Add(1)
-					started = true
-				}
-				errChan <- stdErrScanner.Text()
-			}
-			if started {
-				wg.Done()
-			}
-		}()
-		wg.Add(1)
-		go func() {
-			err := cmd.Wait()
-			if err != nil {
-				errChan <- fmt.Sprintf("error getting task list: %s", err)
-				wg.Done()
-			}
+		if started {
 			wg.Done()
-		}()
-		wg.Wait()
-		if len(taskOut) > 0 {
-			target <- taskOut
 		}
-		if len(errOut) > 0 {
-			return TaskOutputErrMsg(errOut)
+	}()
+	go func() {
+		started := false
+		for stdErrScanner.Scan() {
+			if !started {
+				wg.Add(1)
+				started = true
+			}
+			bus.Publish(TypeTaskOutputErr.Message().SetOutput(stdErrScanner.Text()).TopicMessage())
 		}
-		return ListAllDoneMsg{}
+		if started {
+			wg.Done()
+		}
+	}()
+	wg.Add(1)
+	go func() {
+		err := cmd.Wait()
+		if err != nil {
+			bus.Publish(TypeTaskOutputErr.
+				Message().
+				SetOutput(fmt.Sprintf("error getting task list: %s", err)).
+				TopicMessage(),
+			)
+			wg.Done()
+		}
+		wg.Done()
+	}()
+	wg.Wait()
+	if len(taskOut) > 0 {
+		bus.Publish(TypeTaskJSON.Message().SetOutput(taskOut).TopicMessage())
 	}
 }
 
@@ -160,56 +210,75 @@ func ParseTaskLine(taskMsg string) (Task, bool) {
 	}, true
 }
 
-// ExecuteTask runs a task and returns a command that will handle the output
-func ExecuteTask(taskId string, target chan string, cmdChan chan TaskCommandMsg, errs chan string) tea.Cmd {
-	return func() tea.Msg {
-		command := exec.Command("task", taskId)
-		command.SysProcAttr = TaskProcessAttr()
-		cmdChan <- TaskCommandMsg{Command: command, TaskRunning: true}
-		stdout, err := command.StdoutPipe()
-		if err != nil {
-			cmdChan <- TaskCommandMsg{Command: nil, TaskRunning: false}
-			return TaskErrMsg{Err: err}
-		}
-		stderr, err := command.StderrPipe()
-		if err != nil {
-			cmdChan <- TaskCommandMsg{Command: nil, TaskRunning: false}
-			return TaskErrMsg{Err: err}
-		}
-		if err := command.Start(); err != nil {
-			cmdChan <- TaskCommandMsg{Command: nil, TaskRunning: false}
-			return TaskErrMsg{Err: err}
-		}
-
-		go func() {
-			scanner := bufio.NewScanner(stdout)
-			for scanner.Scan() {
-				line := scanner.Text()
-				target <- line
+// ExecuteTask runs a task
+func ExecuteTask(taskId string, bus msgbus.Publisher[Message]) {
+	msg := TypeTaskCommand.Message()
+	ctx, cancel := context.WithCancel(msg.ctx)
+	msg.ctx, msg.ctxCancel = ctx, cancel
+	command := exec.CommandContext(msg.ctx, "task", taskId)
+	command.SysProcAttr = TaskProcessAttr()
+	bus.Publish(msg.SetCommand(command).SetTaskRunning(true).TopicMessage())
+	// Add this near the beginning of the ExecuteTask function
+	go func() {
+		<-ctx.Done()
+		// If context is canceled, ensure we clean up properly
+		if ctx.Err() == context.Canceled {
+			// Context was explicitly canceled, not timed out
+			bus.Publish(TypeTaskOutputErr.Message().SetOutput("Task cancellation requested").TopicMessage())
+			if err := syscall.Kill(-command.Process.Pid, syscall.SIGINT); err != nil {
+				bus.Publish(TypeTaskOutputErr.Message().SetOutput(fmt.Sprintf("Error cancelling task task: %s", err)).TopicMessage())
+			} else {
+				bus.Publish(TypeTaskOutput.Message().SetOutput("Task cancelled").TopicMessage())
 			}
-		}()
-
-		go func() {
-			scanner := bufio.NewScanner(stderr)
-			for scanner.Scan() {
-				line := scanner.Text()
-				errs <- line
-			}
-		}()
-
-		err = command.Wait()
-
-		cmdChan <- TaskCommandMsg{Command: nil, TaskRunning: false}
-
-		if err != nil {
-			cmdChan <- TaskCommandMsg{Command: nil, TaskRunning: false}
-			var exitError *exec.ExitError
-			if errors.As(err, &exitError) {
-				return TaskErrMsg{Err: fmt.Errorf("task failed with exit code %d: %w", exitError.ExitCode(), err)}
-			}
-			return TaskErrMsg{Err: fmt.Errorf("task failed: %w", err)}
 		}
-
-		return TaskDoneMsg{}
+	}()
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		bus.Publish(TypeTaskCommand.Message().SetCommand(nil).SetTaskRunning(false).TopicMessage())
+		bus.Publish(TypeTaskError.Message().SetError(err).TopicMessage())
+		return
 	}
+	stderr, err := command.StderrPipe()
+	if err != nil {
+		bus.Publish(TypeTaskCommand.Message().SetCommand(nil).SetTaskRunning(false).TopicMessage())
+		bus.Publish(TypeTaskError.Message().SetError(err).TopicMessage())
+		return
+	}
+	if err := command.Start(); err != nil {
+		bus.Publish(TypeTaskCommand.Message().SetCommand(nil).SetTaskRunning(false).TopicMessage())
+		bus.Publish(TypeTaskError.Message().SetError(err).TopicMessage())
+		return
+	}
+
+	go func() {
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			bus.Publish(TypeTaskOutput.Message().SetOutput(scanner.Text()).TopicMessage())
+		}
+	}()
+
+	go func() {
+		scanner := bufio.NewScanner(stderr)
+		for scanner.Scan() {
+			bus.Publish(TypeTaskOutputErr.Message().SetOutput(scanner.Text()).TopicMessage())
+		}
+	}()
+
+	err = command.Wait()
+
+	bus.Publish(TypeTaskCommand.Message().SetCommand(nil).SetTaskRunning(false).TopicMessage())
+
+	if err != nil {
+		var exitError *exec.ExitError
+		if errors.As(err, &exitError) {
+			err = fmt.Errorf("task failed with exit code %d: %w", exitError.ExitCode(), err)
+			bus.Publish(TypeTaskError.Message().SetError(err).TopicMessage())
+			return
+		}
+		err = fmt.Errorf("task failed: %w", err)
+		bus.Publish(TypeTaskError.Message().SetError(err).TopicMessage())
+		return
+	}
+
+	bus.Publish(TypeTaskDone.Message().TopicMessage())
 }
