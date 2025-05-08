@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
-	"syscall"
 )
 
 // Task represents a task from the Taskfile
@@ -225,7 +224,7 @@ func ExecuteTask(taskId string, bus msgbus.Publisher[Message]) {
 		if ctx.Err() == context.Canceled {
 			// Context was explicitly canceled, not timed out
 			bus.Publish(TypeTaskOutputErr.Message().SetOutput("Task cancellation requested").TopicMessage())
-			if err := syscall.Kill(-command.Process.Pid, syscall.SIGINT); err != nil {
+			if err := StopTaskProcess(command.Process); err != nil {
 				bus.Publish(TypeTaskOutputErr.Message().SetOutput(fmt.Sprintf("Error cancelling task task: %s", err)).TopicMessage())
 			} else {
 				bus.Publish(TypeTaskOutput.Message().SetOutput("Task cancelled").TopicMessage())
