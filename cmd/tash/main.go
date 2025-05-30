@@ -3,7 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
-	"github.com/Aj4x/tash/internal/msgbus"
+	"github.com/Aj4x/msgbus"
 	"github.com/Aj4x/tash/internal/task"
 	"github.com/Aj4x/tash/internal/ui"
 	tea "github.com/charmbracelet/bubbletea"

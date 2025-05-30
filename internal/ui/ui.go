@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/Aj4x/tash/internal/msgbus"
+	"github.com/Aj4x/msgbus"
 	"github.com/Aj4x/tash/internal/task"
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/bubbles/viewport"

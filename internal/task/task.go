@@ -5,7 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/Aj4x/tash/internal/msgbus"
+	"github.com/Aj4x/msgbus"
 	"os/exec"
 	"strings"
 	"sync"

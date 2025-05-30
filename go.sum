@@ -1,3 +1,7 @@
+github.com/Aj4x/msgbus v1.0.0 h1:C6YtP1VT5wiYkXw/qnHIBg2evSE1zG8C1i6lFiZlEo4=
+github.com/Aj4x/msgbus v1.0.0/go.mod h1:4Io75AvWPtwCfB7uEfRzjIfKpe8zqGo5+2K3j0J6ER0=
+github.com/Aj4x/uuid v1.0.0 h1:j1bdNUK8sp25Mj0quQm3Q7XbEp8+X1anZmU3T/VIDhY=
+github.com/Aj4x/uuid v1.0.0/go.mod h1:yvjyk/vCRKAks3siUJjCbvE7ZK+9J03JSmh+bnjONDk=
 github.com/aymanbagabas/go-osc52/v2 v2.0.1 h1:HwpRHbFMcZLEVr42D4p7XBqjyuxQH5SMiErDT4WkJ2k=
 github.com/aymanbagabas/go-osc52/v2 v2.0.1/go.mod h1:uYgXzlJ7ZpABp8OJ+exZzJJhRNQ2ASbcXHWsFqH8hp8=
 github.com/aymanbagabas/go-udiff v0.2.0 h1:TK0fH4MteXUDspT88n8CKzvK0X9O2xu9yQjWpi6yML8=
